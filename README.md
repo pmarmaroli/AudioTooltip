@@ -174,7 +174,7 @@ If you encounter any issues or have questions, please contact support at [patric
 ## Developers
 
 - [Patrick Marmaroli](https://www.linkedin.com/in/patrickmarmaroli/) - Developer
-- [Ergo Esken](https://www.linkedin.com/in/ergo-esken/) - Reviewer
+- [Ergo Esken](https://www.linkedin.com/in/ergo-esken/) - QA Auditor
 
 ## License
 
