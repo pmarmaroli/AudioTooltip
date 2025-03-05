@@ -55,6 +55,7 @@ class EnhancedTooltip(QWidget):
         self.on_channel_changed = None  # Callback for channel change
         self.on_visualization_requested = None  # Callback for visualization requests
         self.on_transcription_requested = None  # Callback for transcription requests
+        self.on_refresh_requested = None  # Callback for refresh button
 
         # Initialize UI
         self._init_ui()
@@ -180,6 +181,14 @@ class EnhancedTooltip(QWidget):
         # Hide without animation
         self.hide()
 
+    def _refresh_analysis(self):
+        """Force a refresh of the current audio analysis"""
+        if not self.current_file or not hasattr(self, 'on_refresh_requested') or not self.on_refresh_requested:
+            return
+
+        # Call the refresh callback with the current file and channel
+        self.on_refresh_requested(self.current_file, self.current_channel)
+
     def _create_action_buttons(self):
         """Create action buttons for audio preview and control"""
         action_layout = QHBoxLayout()
@@ -189,6 +198,13 @@ class EnhancedTooltip(QWidget):
         self.play_button.setIcon(QIcon.fromTheme(
             "media-playback-start", QIcon.fromTheme("play")))
         self.play_button.clicked.connect(self._play_preview)
+
+        # Add Refresh button
+        refresh_button = QPushButton("Refresh Analysis")
+        refresh_button.setIcon(QIcon.fromTheme(
+            "view-refresh", QIcon.fromTheme("refresh")))
+        refresh_button.clicked.connect(self._refresh_analysis)
+        refresh_button.setToolTip("Reload analysis after file changes")
 
         # Open in Audacity button
         audacity_button = QPushButton("Open in Audacity")
@@ -203,6 +219,7 @@ class EnhancedTooltip(QWidget):
         save_button.clicked.connect(self._save_all)
 
         action_layout.addWidget(self.play_button)
+        action_layout.addWidget(refresh_button)
         action_layout.addWidget(audacity_button)
         action_layout.addWidget(save_button)
 
@@ -591,7 +608,7 @@ class EnhancedTooltip(QWidget):
 
         # Force a reasonable minimum height for the metadata section
         # Ensure it has space for all metadata
-        self.metadata_label.setMinimumHeight(150)
+        self.metadata_label.setMinimumHeight(200)
 
         info_layout.addWidget(self.file_name_label)
         info_layout.addWidget(self.metadata_label)
@@ -835,7 +852,61 @@ class EnhancedTooltip(QWidget):
             if index >= 0:
                 self.transcription_channel_combo.setCurrentIndex(index)
 
-    def update_content(self, file_path, metadata, viz_buffer, transcription, num_channels=1, current_channel=0):
+    def update_channel_delay(self, delay_ms=None):
+        """Display channel delay with consistent visibility and matching font style"""
+        # Create the delay label if it doesn't exist
+        if not hasattr(self, 'delay_label'):
+            self.delay_label = QLabel()
+            # Find the info frame in the overview tab
+            info_frame = None
+            for i in range(self.overview_tab.layout().count()):
+                widget = self.overview_tab.layout().itemAt(i).widget()
+                if isinstance(widget, QFrame) and widget.styleSheet().find("background-color: rgba(240, 240, 240, 200)") >= 0:
+                    info_frame = widget
+                    break
+
+            if info_frame and info_frame.layout():
+                # Add the delay label to the info frame's layout
+                info_frame.layout().addWidget(self.delay_label)
+
+        # Base style that matches the metadata label (font-size: 10pt)
+        base_style = """
+            font-size: 10pt;
+            padding: 2px 5px;
+            border-radius: 3px;
+            margin-top: 8px;
+        """
+
+        # Always show the label with appropriate text and style
+        if self.num_channels > 1:
+            if delay_ms is not None and abs(delay_ms) > 0.01:
+                direction = "right→left" if delay_ms > 0 else "left→right"
+                self.delay_label.setText(
+                    f"Time Delay: {abs(delay_ms):.2f} ms ({direction})")
+                self.delay_label.setStyleSheet(f"""
+                    color: #006600;
+                    font-weight: bold;
+                    {base_style}
+                """)
+            else:
+                self.delay_label.setText("Time Delay: not detected")
+                self.delay_label.setStyleSheet(f"""
+                    color: #666666;
+                    font-style: italic;
+                    {base_style}
+                """)
+        else:
+            self.delay_label.setText("Time Delay: N/A (mono audio)")
+            self.delay_label.setStyleSheet(f"""
+                color: #666666;
+                font-style: italic;
+                {base_style}
+            """)
+
+        # Ensure it's visible
+        self.delay_label.setVisible(True)
+
+    def update_content(self, file_path, metadata, viz_buffer, transcription, num_channels=1, current_channel=0, delay_ms=None):
         """Update the tooltip content with analysis results."""
         self.current_file = file_path
 
@@ -888,6 +959,8 @@ class EnhancedTooltip(QWidget):
 
         preview_info = f"Analysis is based on first {preview_duration} of channel {current_channel+1}/{num_channels}"
         self.viz_preview_info.setText(preview_info)
+
+        self.update_channel_delay(delay_ms)
 
     def _toggle_pin(self, checked):
         """Toggle pinned state"""

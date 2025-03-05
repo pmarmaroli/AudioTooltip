@@ -15,3 +15,5 @@
 .venv
 build
 dist
+.gitignore.sourcecode
+sourceCode.txt

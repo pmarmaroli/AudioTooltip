@@ -1,28 +1,51 @@
 # Audio Tooltip
 
-A desktop tooltip that provides instant audio insights like metadata, spectrograms, and transcription with a simple Alt+A keyboard shortcut.
+Audio Tooltip is a desktop application that gives you quick information about audio files without needing to open complex audio editing software.
+
+## What It Does
+
+The app runs quietly in your system tray (the small icons area near your clock) and gives you instant information about audio files with a simple keyboard shortcut (Alt+A). When you select an audio file and press this shortcut, a small window (tooltip) pops up showing:
+
+1. Basic information about the audio file (length, format, etc.)
+2. Visual representations of the sound (waveforms and spectrograms)
+3. Written transcript of any speech in the audio (like subtitles)
+
+## How You Use It
+
+There are several ways to analyze audio files:
+
+1. Select a file in Windows Explorer and press Alt+A
+2. Right-click the app's icon in the system tray and select "Analyze File..."
+3. Open the drop target window and drag-and-drop audio files onto it
+
+## Main Features
+
+- **Overview**: Basic information and waveform display.
+- **Visualizations**: Various audio visualizations (spectrogram, mel-spectrogram, chromagram, double waveform)
+- **Full Audio Transcription**: Speech-to-text via Azure Speech Services with continuous recognition for files of any length
+- **Simple interface**: Everything is organized in tabs for easy navigation
+
+Additional controls:
+
+- Play a short preview of the audio
+- Open the full file in Audacity or your default audio player
+- Pin the tooltip to keep it visible
+- Switch between channels for multi-channel audio
+- Save analysis results to files
+
+## Why It's Useful
+
+We hope this tool can be helpful for:
+
+- Audio engineers wanting quick insights into sound files
+- Podcast editors checking audio quality before detailed editing
+- Musicians analyzing sound characteristics
+- Anyone who works with audio and needs quick information without opening large programs
 
 ## Application Interface
 
 ![Audio Tooltip interface showing waveform analysis](screenshots/interface.png)
 ![Audio Tooltip interface showing waveform analysis](screenshots/visualization.png)
-
-## Installation
-
-## Overview
-
-Audio Tooltip provides detailed audio analysis through an unobtrusive tooltip interface. Analyze audio files directly from your file explorer with a simple keyboard shortcut (Alt+A), or open files manually through the application.
-
-## Features
-
-- **Comprehensive Audio Analysis**: Extract spectral, harmonic, and perceptual features
-- **Rich Visualizations**: Waveforms, spectrograms, chromagrams analysis
-- **Full Audio Transcription**: Speech-to-text via Azure Speech Services with continuous recognition for files of any length
-- **System Tray Integration**: Minimal footprint with easy access
-- **File Explorer Integration**: Analyze files with Alt+A keyboard shortcut
-- **Multi-channel Support**: Analyze and visualize individual channels in multi-channel audio
-- **Audio Previews**: Generate and play short previews
-- **Double Waveform Visualization**: Special visualization for stereo audio files
 
 ## Project Structure
 
@@ -109,90 +132,6 @@ pyinstaller .\AudioTooltip.spec --noconfirm
 ```
 
 The optimized build will create a `dist/AudioTooltip` folder containing the executable and all necessary files.
-
-## Usage
-
-### System Tray
-
-The application runs in the system tray. Right-click the icon to:
-
-- Analyze a file
-- Access recently analyzed files
-- Adjust application settings
-- Exit the application
-
-### Explorer Integration
-
-1. Left-click an audio file in Windows Explorer
-2. Press Alt+A
-3. The analysis tooltip will appear with detailed information
-
-### Drop Target Window
-
-Access the drop target window by:
-
-- Right-clicking the system tray icon and selecting "Open Drop Target Window"
-- Using the Alt+D keyboard shortcut
-
-Simply drag and drop audio files onto this window for quick analysis.
-
-### Manual Analysis
-
-1. Right-click the system tray icon
-2. Select "Analyze File..."
-3. Choose an audio file from the file dialog
-
-### Tooltip Features
-
-The tooltip interface provides several tabs:
-
-- **Overview**: Basic file information and waveform display
-- **Visualizations**: Various audio visualizations (spectrogram, mel-spectrogram, chromagram, double waveform)
-- **Transcript**: Speech-to-text transcription of full audio content
-
-Additional controls:
-
-- Play a short preview of the audio
-- Open the full file in Audacity or your default audio player
-- Pin the tooltip to keep it visible
-- Switch between channels for multi-channel audio
-- Save analysis results to files
-
-## Configuration
-
-Access settings by right-clicking the tray icon and selecting "Settings..." or from within the tooltip.
-
-### Analysis Settings
-
-- Preview duration
-- Option to analyze entire file
-- Configure advanced analysis features
-
-### Transcription Settings
-
-- Enable/disable speech transcription
-- Configure Azure Speech Services credentials
-- Select language options
-- Transcription duration options:
-  - Same as preview
-  - 60 seconds
-  - Full file (continuous recognition)
-
-### Channel Analysis
-
-For multi-channel audio:
-
-- Analyze individual channels separately
-- View channel-specific visualizations
-- Calculate inter-channel time delays
-
-### Double Waveform Visualization
-
-A specialized visualization for stereo audio files:
-
-- Left channel (red) shown as positive values
-- Right channel (blue) shown as negative values
-- Easily identify stereo imaging and channel differences
 
 ## Development
 

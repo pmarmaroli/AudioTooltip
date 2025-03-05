@@ -83,6 +83,43 @@ class AudioAnalyzer:
 
         self.logger.info("AudioAnalyzer initialized")
 
+    def is_cache_valid(self, file_path: str) -> bool:
+        """
+        Check if cached analysis for a file is still valid.
+
+        Args:
+            file_path: Path to the audio file
+
+        Returns:
+            bool: True if cache is valid, False if file has been modified
+        """
+        # If file doesn't exist, cache is invalid
+        if not os.path.exists(file_path):
+            return False
+
+        # Check if file has been modified since it was cached
+        current_mtime = os.path.getmtime(file_path)
+
+        # If we don't have a stored modification time, cache is invalid
+        if 'mtime' not in self.analysis_cache.get(file_path, {}):
+            # Initialize if needed
+            if file_path not in self.analysis_cache:
+                self.analysis_cache[file_path] = {}
+            self.analysis_cache[file_path]['mtime'] = current_mtime
+            return False
+
+        # If modification time has changed, cache is invalid
+        cached_mtime = self.analysis_cache[file_path]['mtime']
+        if current_mtime > cached_mtime:
+            self.logger.info(
+                f"File {file_path} has been modified since last analysis")
+            # Update the stored modification time
+            self.analysis_cache[file_path]['mtime'] = current_mtime
+            return False
+
+        # Cache is valid
+        return True
+
     def calculate_time_delay(self, file_path: str) -> Optional[float]:
         """Calculate time delay between left and right channels using GCC-PHAT."""
         try:
@@ -117,23 +154,14 @@ class AudioAnalyzer:
             right_channel = y[:, 1]
 
             self.logger.debug("Computing cross-correlation")
+            (G, axe_spl, axe_ms) = self.GCCPHAT(
+                left_channel, right_channel, sr, 1)
 
-            # Apply PHAT weighting
-            freq, Pxy = signal.csd(
-                left_channel, right_channel, fs=sr, nperseg=min(len(left_channel), 2048))
+            # Find the peak of the cross-correlation
+            peak_index = np.argmax(G)
+            delay_ms = axe_ms[peak_index]
 
-            # PHAT weighting
-            Pxy_phat = Pxy / np.abs(Pxy)
-
-            # Convert back to time domain
-            correlation_phat = np.fft.irfft(Pxy_phat)
-
-            # Find the peak in the correlation
-            peak_idx = np.argmax(np.abs(correlation_phat))
-
-            # Convert to time delay in milliseconds
-            delay_samples = peak_idx - (len(correlation_phat) // 2)
-            delay_ms = (delay_samples / sr) * 1000
+            print(f"Successfully calculated time delay: {delay_ms:.2f} ms")
 
             self.logger.info(
                 f"Successfully calculated time delay: {delay_ms:.2f} ms")
@@ -143,6 +171,78 @@ class AudioAnalyzer:
             self.logger.error(f"Error calculating time delay: {e}")
             self.logger.error(traceback.format_exc())
             return None
+
+    def MYFFT(self, a):
+        if isinstance(a, list):
+            myfft = np.fft.fft(a)
+        else:
+            myfft = np.fft.fftn(a)
+
+        return myfft
+
+    def MYIFFT(self, a):
+        if isinstance(a, list):
+            myifft = np.fft.ifft(a)
+        else:
+            myifft = np.fft.ifftn(a)
+
+        return myifft
+
+    def COLORE(self, sigin, fs, fmin, fmax, mode):
+        # FFT-based filter
+        # if mode = 1 -> bandpass between fmin and fmax, if mode = 0 -> bandcut between fmin and fmax
+
+        siginFFT = self.MYFFT(sigin)
+        nfft = len(siginFFT)
+
+        vfc_pos = np.linspace(0, fs/2, (int)(nfft/2+1))
+        vfc_neg = -np.flipud(vfc_pos[1:len(vfc_pos)-1])
+        vfc = np.concatenate((vfc_pos, vfc_neg))
+
+        indFreqInBand = np.where(
+            (((vfc >= fmin) & (vfc <= fmax)) | ((vfc <= -fmin) & (vfc >= -fmax))))
+        indFreqOutBand = np.where(
+            (((vfc < fmin) & (vfc > -fmin)) | ((vfc < -fmax) | (vfc > fmax))))
+
+        absS = np.abs(siginFFT)
+
+        if (mode == 1):
+            absS[indFreqOutBand] = 0
+        else:
+            absS[indFreqInBand] = 0
+
+        sigout = np.real(self.MYIFFT(np.multiply(
+            absS, np.exp(np.multiply(1j, np.angle(siginFFT))))))
+
+        return sigout
+
+    def GCCPHAT(self, s1, s2, fs, norm, fmin=0, fmax=8000):
+        s1c = self.COLORE(s1, fs, fmin, fmax, 1)
+        s2c = self.COLORE(s2, fs, fmin, fmax, 1)
+
+        f_s1 = self.MYFFT(s1c)
+        f_s2 = self.MYFFT(s2c)
+
+        f_s1 = self.MYFFT(s1)
+        f_s2 = self.MYFFT(s2)
+
+        Pxy = f_s1 * np.conj(f_s2)
+
+        if (norm == 1):
+            denom = np.abs(Pxy)
+            denom[denom < 1e-6] = 1e-6
+        else:
+            denom = 1
+
+        # This line is the only difference between GCC-PHAT and normal cross correlation
+        G = np.fft.fftshift(np.real(self.MYIFFT(Pxy / denom)))
+        G = G / np.max(np.abs(G))
+
+        x = np.array([i for i in range(G.shape[0])])
+        axe_spl = x - G.shape[0]/2
+        axe_ms = axe_spl/fs*1000
+
+        return G, axe_spl, axe_ms
 
     def initialize(self) -> bool:
         """
@@ -694,26 +794,6 @@ class AudioAnalyzer:
             except Exception as e:
                 self.logger.warning(f"Could not get file stats: {e}")
 
-            # Add time delay information for stereo files
-            if num_channels == 2:
-                self.logger.info(
-                    "Stereo file detected, calculating time delay")
-                try:
-                    time_delay = self.calculate_time_delay(file_path)
-                    if time_delay is not None:
-                        info.append(f"Time Delay: {time_delay:.2f} ms")
-                        self.logger.info(
-                            f"Added time delay to metadata: {time_delay:.2f} ms")
-                    else:
-                        self.logger.warning(
-                            "Time delay calculation returned None")
-                except Exception as e:
-                    self.logger.warning(f"Error calculating time delay: {e}")
-                    self.logger.error(traceback.format_exc())
-            else:
-                self.logger.debug(
-                    f"Not calculating time delay - channels: {num_channels}")
-
             metadata = "\n".join(info)
             self.logger.info(
                 f"Metadata extraction complete: {len(info)} fields")
@@ -1022,7 +1102,7 @@ class AudioAnalyzer:
                     self.logger.warning(
                         f"Could not delete temp file {temp_wav}: {e}")
 
-    def process_audio_file(self, file_path: str, channel: int = 0, run_transcription: bool = False) -> Optional[Tuple[str, str, io.BytesIO, Dict, str, int]]:
+    def process_audio_file(self, file_path: str, channel: int = 0, run_transcription: bool = False, force_refresh: bool = False) -> Optional[Tuple[str, str, io.BytesIO, Dict, str, int, Optional[float]]]:
         """
         Process audio file with comprehensive analysis and caching.
 
@@ -1030,19 +1110,21 @@ class AudioAnalyzer:
             file_path: Path to the audio file
             channel: Channel to process (0 for left/mono, 1 for right, etc.)
             run_transcription: Whether to run transcription immediately
+            force_refresh: Whether to force recalculation even if cache exists
 
         Returns:
-            Tuple of (file_path, metadata, visualization_buffer, transcription, num_channels)
+            Tuple of (file_path, metadata, visualization_buffer, transcription, num_channels, channel, time_delay)
             or None on error
         """
         start_time = time.time()
         self.logger.info(
-            f"Processing audio file: {file_path}, channel: {channel}")
+            f"Processing audio file: {file_path}, channel: {channel}, force_refresh: {force_refresh}")
 
         try:
-            # Check cache first - we'll now include channel in the cache key
-            cache_key = f"{file_path}_{channel}_full_analysis"
-            if file_path in self.analysis_cache and cache_key in self.analysis_cache[file_path]:
+            # Check cache first - only if not forcing refresh
+            cache_key = f"{channel}_full_analysis"
+
+            if not force_refresh and file_path in self.analysis_cache and cache_key in self.analysis_cache[file_path] and self.is_cache_valid(file_path):
                 self.logger.info(
                     f"Using cached analysis for {file_path}, channel {channel}")
                 return self.analysis_cache[file_path][cache_key]
@@ -1064,19 +1146,32 @@ class AudioAnalyzer:
             # Generate only waveform visualization for overview tab
             viz_buffer = self.generate_waveform(y, sr)
 
+            # Calculate time delay for stereo files
+            time_delay = None
+            if num_channels > 1:
+                try:
+                    time_delay = self.calculate_time_delay(file_path)
+                    self.logger.info(f"Calculated time delay: {time_delay}")
+                except Exception as e:
+                    self.logger.error(f"Error calculating time delay: {e}")
+
             # Transcription only if explicitly requested
             transcription = None
             if run_transcription and self.settings and self.settings.value("enable_transcription", "false") == "true":
                 transcription = self.transcribe_audio(file_path)
 
-            # Prepare result
-            result = (file_path, metadata, viz_buffer,
-                      transcription, num_channels)
+            # Prepare result with time delay
+            result = (file_path, metadata, viz_buffer, transcription,
+                      num_channels, channel, time_delay)
+
+            # Store current modification time with cache
+            if file_path not in self.analysis_cache:
+                self.analysis_cache[file_path] = {}
+            self.analysis_cache[file_path]['mtime'] = os.path.getmtime(
+                file_path)
 
             # Cache result if not too large
             if viz_buffer is None or viz_buffer.getbuffer().nbytes < 5*1024*1024:  # 5MB limit
-                if file_path not in self.analysis_cache:
-                    self.analysis_cache[file_path] = {}
                 self.analysis_cache[file_path][cache_key] = result
 
             elapsed = time.time() - start_time

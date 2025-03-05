@@ -276,17 +276,18 @@ class AudioTooltipWorker(QThread):
     progress = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, analyzer, file_path, channel=0):
+    def __init__(self, analyzer, file_path, channel=0, force_refresh=False):
         super().__init__()
         self.analyzer = analyzer
         self.file_path = file_path
         self.channel = channel
+        self.force_refresh = force_refresh
         self.logger = get_module_logger("AudioTooltipWorker")
 
     def run(self):
         """Process audio file"""
         self.logger.info(
-            f"Starting worker for {self.file_path}, channel {self.channel}")
+            f"Starting worker for {self.file_path}, channel {self.channel}, force_refresh: {self.force_refresh}")
 
         try:
             # Ensure analyzer is initialized
@@ -298,7 +299,7 @@ class AudioTooltipWorker(QThread):
             self.progress.emit(
                 f"Loading audio data (channel {self.channel+1})...")
             result = self.analyzer.process_audio_file(
-                self.file_path, self.channel)
+                self.file_path, self.channel, force_refresh=self.force_refresh)
 
             if result:
                 self.logger.info(
@@ -421,6 +422,7 @@ class AudioTooltipApp(QWidget):
         self.tooltip.on_channel_changed = self.on_channel_changed
         self.tooltip.on_visualization_requested = self.on_visualization_requested
         self.tooltip.on_transcription_requested = self.on_transcription_requested
+        self.tooltip.on_refresh_requested = self.refresh_analysis
 
         # Initialize recent files
         self.recent_files = load_recent_files(self.settings)
@@ -451,6 +453,14 @@ class AudioTooltipApp(QWidget):
         self.cleanup_timer.start(60000)  # Run every minute
 
         self.module_logger.info("Application initialized")
+
+    def refresh_analysis(self, file_path, channel):
+        """Force a refresh of the audio analysis"""
+        self.module_logger.info(
+            f"Forcing refresh of {file_path}, channel {channel}")
+
+        # Call analyze_file with force_refresh=True
+        self.analyze_file(file_path, channel, force_refresh=True)
 
     def show_drop_window(self):
         """Show the drop target window"""
@@ -819,10 +829,10 @@ class AudioTooltipApp(QWidget):
             self.progress_dialog = None
 
     @pyqtSlot(str)
-    def analyze_file(self, file_path, channel=0):
+    def analyze_file(self, file_path, channel=0, force_refresh=False):
         """Process audio file with worker thread"""
         self.module_logger.info(
-            f"Analyzing file: {file_path}, channel: {channel}")
+            f"Analyzing file: {file_path}, channel: {channel}, force_refresh: {force_refresh}")
 
         # Validate file path
         is_valid, error_message = validate_audio_file_path(
@@ -840,8 +850,9 @@ class AudioTooltipApp(QWidget):
         if not hasattr(self, "workers"):
             self.workers = []  # Store all workers to prevent garbage collection
 
-        # Create worker for async processing
-        worker = AudioTooltipWorker(self.audio_analyzer, file_path, channel)
+        # Create worker for async processing with force_refresh parameter
+        worker = AudioTooltipWorker(
+            self.audio_analyzer, file_path, channel, force_refresh)
 
         # Connect worker signals
         worker.finished.connect(
@@ -878,13 +889,22 @@ class AudioTooltipApp(QWidget):
                 self.settings, file_path, self.recent_files)
             self.update_recent_menu()
 
-            file_path, metadata, viz_buffer, transcription, num_channels = result
-
-            # Complete result
-            final_result = (file_path, metadata, viz_buffer,
-                            transcription, num_channels, channel)
+            # Unpack the result tuple with the correct number of values
+            # Format: (file_path, metadata, viz_buffer, transcription, num_channels, channel, time_delay)
+            if len(result) >= 7:
+                file_path, metadata, viz_buffer, transcription, num_channels, channel, time_delay = result
+            else:
+                # Handle older format for backward compatibility
+                file_path, metadata, viz_buffer, transcription, num_channels = result
+                time_delay = None
 
             # Show tooltip with results
+            final_result = (file_path, metadata, viz_buffer,
+                            transcription, num_channels, channel)
+            if len(result) >= 7:
+                # Include time_delay in final result if available
+                final_result = final_result + (time_delay,)
+
             self.showTooltipSignal.emit(final_result)
 
             # Connect channel change handler
@@ -974,22 +994,36 @@ class AudioTooltipApp(QWidget):
             return
 
         try:
-            # Unpack result - now with channel information
-            if len(result) == 6:  # New format with channel info
+            # Unpack result with format handling
+            if len(result) >= 7:  # New format with time_delay
+                file_path, metadata, viz_buffer, transcription, num_channels, channel, time_delay = result
+            elif len(result) == 6:  # Format with channel but no time_delay
                 file_path, metadata, viz_buffer, transcription, num_channels, channel = result
-            else:  # Old format compatibility
-                file_path, metadata, viz_buffer, transcription = result
-                num_channels, channel = 1, 0
+                time_delay = None
+            else:  # Oldest format
+                file_path, metadata, viz_buffer, transcription, num_channels = result
+                channel, time_delay = 0, None
 
-            # Update tooltip content
-            self.tooltip.update_content(
-                file_path,
-                metadata,
-                viz_buffer,
-                transcription,
-                num_channels,
-                channel
-            )
+            # Update tooltip content with time_delay if available
+            if time_delay is not None:
+                self.tooltip.update_content(
+                    file_path,
+                    metadata,
+                    viz_buffer,
+                    transcription,
+                    num_channels,
+                    channel,
+                    time_delay
+                )
+            else:
+                self.tooltip.update_content(
+                    file_path,
+                    metadata,
+                    viz_buffer,
+                    transcription,
+                    num_channels,
+                    channel
+                )
 
             # Get available screen geometry
             screen_rect = QApplication.primaryScreen().availableGeometry()
@@ -1602,7 +1636,7 @@ if __name__ == '__main__':
                          Qt.AlignCenter, "Audio Tooltip")
 
         # Draw version number
-        version = "v1.0.2"  # You can change this to your desired version number
+        version = "v1.0.4"
         version_font = QFont("Arial", 9)
         painter.setFont(version_font)
         painter.setPen(QColor(120, 120, 120))
