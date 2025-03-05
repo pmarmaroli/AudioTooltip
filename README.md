@@ -1,6 +1,6 @@
 # Audio Tooltip
 
-A powerful desktop application for audio file analysis with advanced visualization and feature extraction.
+A desktop tooltip that provides instant audio insights like metadata, spectrograms, and transcription with a simple Alt+A keyboard shortcut.
 
 ## Windows Security Warning Notice
 
