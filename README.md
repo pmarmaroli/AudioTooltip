@@ -1,6 +1,6 @@
 # Audio Tooltip
 
-Audio Tooltip is a desktop application that gives you quick information about audio files without needing to open complex audio editing software.
+Audio Tooltip is a desktop application that gives you quick information on audio files without needing to open complex audio editing software.
 
 ## What It Does
 
