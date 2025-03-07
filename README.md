@@ -10,7 +10,7 @@ The app runs quietly in your system tray (the small icons area near your clock) 
 2. Visual representations of the sound (waveforms and spectrograms)
 3. Written transcript of any speech in the audio (like subtitles)
 
-## How You Use It
+## How To Use It
 
 There are several ways to analyze audio files:
 
