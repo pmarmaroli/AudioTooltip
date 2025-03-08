@@ -15,6 +15,8 @@ import azure.cognitiveservices.speech as speechsdk
 import tempfile
 import os
 import wave
+import sys
+import winreg
 
 
 class SettingsDialog(QDialog):
@@ -78,6 +80,61 @@ class SettingsDialog(QDialog):
 
         main_layout.addWidget(button_box)
 
+    def _toggle_startup(self, state):
+        """Toggle startup with Windows"""
+        try:
+            if state == Qt.Checked:
+                self._enable_startup()
+            else:
+                self._disable_startup()
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Startup Setting Error",
+                f"Could not change startup setting: {str(e)}"
+            )
+
+    def _enable_startup(self):
+        """Add application to Windows startup"""
+        try:
+            # Get path to the executable
+            if getattr(sys, 'frozen', False):
+                # If running as exe (PyInstaller)
+                executable_path = f'"{sys.executable}"'
+            else:
+                # If running as script
+                executable_path = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_SET_VALUE
+            )
+            winreg.SetValueEx(key, "AudioTooltip", 0,
+                              winreg.REG_SZ, executable_path)
+            winreg.CloseKey(key)
+        except Exception as e:
+            raise Exception(f"Failed to add to startup: {str(e)}")
+
+    def _disable_startup(self):
+        """Remove application from Windows startup"""
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_SET_VALUE
+            )
+            try:
+                winreg.DeleteValue(key, "AudioTooltip")
+            except FileNotFoundError:
+                # Key doesn't exist, which is fine
+                pass
+            winreg.CloseKey(key)
+        except Exception as e:
+            raise Exception(f"Failed to remove from startup: {str(e)}")
+
     def _create_general_tab(self):
         """Create general settings tab"""
         tab = QWidget()
@@ -95,8 +152,15 @@ class SettingsDialog(QDialog):
         self.auto_close_time_spin.setValue(10)
         self.auto_close_time_spin.setSuffix(" seconds")
 
+        # Add startup option
+        self.startup_check = QCheckBox(
+            "Start AudioTooltip when Windows starts")
+        self.startup_check.setChecked(True)
+        self.startup_check.stateChanged.connect(self._toggle_startup)
+
         interface_layout.addRow("", self.auto_close_check)
         interface_layout.addRow("Auto-close after:", self.auto_close_time_spin)
+        interface_layout.addRow("", self.startup_check)
 
         # Add to layout
         layout.addWidget(interface_group)
@@ -416,6 +480,24 @@ class SettingsDialog(QDialog):
         # Update transcription options enabled state
         self._toggle_transcription_options(
             Qt.Checked if self.enable_transcription_check.isChecked() else Qt.Unchecked)
+
+        # Check if app is in startup
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_READ
+            )
+            try:
+                winreg.QueryValueEx(key, "AudioTooltip")
+                self.startup_check.setChecked(True)
+            except FileNotFoundError:
+                self.startup_check.setChecked(False)
+            winreg.CloseKey(key)
+        except Exception:
+            # Default to checked if we can't read registry
+            self.startup_check.setChecked(True)
 
     def _apply_settings(self):
         """Apply current settings to QSettings"""
