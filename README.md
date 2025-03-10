@@ -18,6 +18,10 @@ There are several ways to analyze audio files:
 2. Right-click the app's icon in the system tray and select "Analyze File..."
 3. Open the drop target window and drag-and-drop audio files onto it
 
+## Watch our Youtube Demo
+
+[![IMAGE ALT TEXT](http://img.youtube.com/vi/xclEy1SetjA/0.jpg)](http://www.youtube.com/watch?v=xclEy1SetjA "Video Title")
+
 ## Main Features
 
 - **Overview**: Basic information and waveform display.
