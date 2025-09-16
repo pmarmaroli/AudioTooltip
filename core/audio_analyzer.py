@@ -220,11 +220,9 @@ class AudioAnalyzer:
         s1c = self.COLORE(s1, fs, fmin, fmax, 1)
         s2c = self.COLORE(s2, fs, fmin, fmax, 1)
 
+        # Use FFTs of the filtered signals (do not overwrite them accidentally)
         f_s1 = self.MYFFT(s1c)
         f_s2 = self.MYFFT(s2c)
-
-        f_s1 = self.MYFFT(s1)
-        f_s2 = self.MYFFT(s2)
 
         Pxy = f_s1 * np.conj(f_s2)
 
@@ -537,10 +535,13 @@ class AudioAnalyzer:
                     # Resample if needed
                     if sf_file.samplerate != target_sr:
                         if all_channels and len(y.shape) > 1:
-                            # Resample multi-channel data
-                            y_resampled = np.zeros(
-                                (y.shape[0], int(y.shape[1] * target_sr / sf_file.samplerate)))
-                            for ch in range(y.shape[1]):
+                            # Resample multi-channel data correctly: compute new frame count
+                            orig_frames = y.shape[0]
+                            num_channels = y.shape[1]
+                            new_len = int(orig_frames * target_sr / sf_file.samplerate)
+                            # Allocate with shape (new_frames, num_channels)
+                            y_resampled = np.zeros((new_len, num_channels), dtype=y.dtype)
+                            for ch in range(num_channels):
                                 y_resampled[:, ch] = librosa.resample(
                                     y[:, ch], orig_sr=sf_file.samplerate, target_sr=target_sr)
                             y = y_resampled
@@ -561,15 +562,6 @@ class AudioAnalyzer:
                             sr=target_sr,
                             mono=not all_channels  # Keep channels if all_channels is True
                         )
-
-                        # Extract requested channel if not all_channels
-                        if not all_channels and len(y.shape) > 1:
-                            if channel < y.shape[0]:
-                                y = y[channel]
-                            else:
-                                self.logger.warning(
-                                    f"Channel {channel} not available, using first channel")
-                                y = y[0]
                     else:
                         y, actual_sr = librosa.load(
                             audio_path,
@@ -579,14 +571,21 @@ class AudioAnalyzer:
                             mono=not all_channels  # Keep channels if all_channels is True
                         )
 
-                        # Extract requested channel if not all_channels
-                        if not all_channels and len(y.shape) > 1:
+                    # librosa returns multi-channel arrays as (channels, frames) when mono=False.
+                    # Normalize the shape so that all-channel data is (frames, channels).
+                    if isinstance(y, np.ndarray) and y.ndim > 1:
+                        if not all_channels:
+                            # We requested a single channel: librosa returns (channels, frames)
+                            # Pick the requested channel (or first available) which is y[channel]
                             if channel < y.shape[0]:
                                 y = y[channel]
                             else:
-                                self.logger.warning(
-                                    f"Channel {channel} not available, using first channel")
+                                self.logger.warning(f"Channel {channel} not available from librosa, using channel 0")
                                 y = y[0]
+                        else:
+                            # all_channels=True: transpose to (frames, channels)
+                            if y.shape[0] != 0:
+                                y = y.T
                 except Exception as e:
                     self.logger.error(f"All audio loading methods failed: {e}")
                     self.logger.error(traceback.format_exc())

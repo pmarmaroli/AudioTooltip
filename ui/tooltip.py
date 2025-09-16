@@ -5,6 +5,7 @@ Provides a customizable tooltip for displaying audio analysis results.
 """
 
 import os
+import subprocess
 from PyQt5.QtGui import QPixmap, QFont, QIcon, QPainter, QColor, QPen, QCursor
 from PyQt5.QtCore import Qt, QTimer, QSize, QPoint, QRect, QPropertyAnimation, QEasingCurve, QSettings
 from PyQt5.QtWidgets import (
@@ -83,11 +84,15 @@ class EnhancedTooltip(QWidget):
         self.overview_tab = self._create_overview_tab()
         self.visualizations_tab = self._create_visualizations_tab()
         self.transcript_tab = self._create_transcript_tab()
+        self.howto_tab = self._create_howto_tab()
+        self.about_tab = self._create_about_tab()
 
         # Add tabs to widget
         self.tab_widget.addTab(self.overview_tab, "Overview")
         self.tab_widget.addTab(self.visualizations_tab, "Visualizations")
         self.tab_widget.addTab(self.transcript_tab, "Transcript")
+        self.tab_widget.addTab(self.howto_tab, "How to Use")
+        self.tab_widget.addTab(self.about_tab, "About")
 
         main_layout.addWidget(self.tab_widget)
 
@@ -852,6 +857,188 @@ class EnhancedTooltip(QWidget):
             if index >= 0:
                 self.transcription_channel_combo.setCurrentIndex(index)
 
+    def _create_howto_tab(self):
+        """Create How to Use tab with usage instructions"""
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(15)
+
+        # Title
+        title = QLabel("How to Use Audio Tooltip")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50; padding-bottom: 10px;")
+        layout.addWidget(title)
+
+        # Methods section
+        methods_group = QGroupBox("Input Methods")
+        methods_layout = QVBoxLayout(methods_group)
+        
+        methods_text = QLabel("""
+<b>1. System Tray Menu:</b><br>
+   • Right-click the system tray icon<br>
+   • Select "Analyze File..." to open file browser<br>
+   • Or use "Analyze Selected File in Explorer" for the current selection<br><br>
+
+<b>2. Keyboard Shortcuts:</b><br>
+   • <b>Alt+A</b>: Analyze the currently selected file in Windows Explorer<br>
+   • <b>Alt+D</b>: Open drop target window for drag & drop<br><br>
+
+<b>3. Middle-Click Detection:</b><br>
+   • Hold middle mouse button on an audio file in Explorer<br>
+   • The tooltip will automatically appear with analysis<br><br>
+
+<b>4. Drag & Drop:</b><br>
+   • Use Alt+D to open the drop target window<br>
+   • Drag audio files directly onto the window
+        """)
+        methods_text.setWordWrap(True)
+        methods_text.setStyleSheet("color: #34495e; line-height: 1.4;")
+        methods_layout.addWidget(methods_text)
+        layout.addWidget(methods_group)
+
+        # Supported formats section
+        formats_group = QGroupBox("Supported Audio Formats")
+        formats_layout = QVBoxLayout(formats_group)
+        
+        formats_text = QLabel("""
+<b>Common formats:</b> WAV, MP3, FLAC, OGG, M4A, AAC<br>
+<b>Professional formats:</b> AIFF, AU, BWF, RF64<br>
+<b>Compressed formats:</b> MP3, AAC, OGG Vorbis<br>
+<b>Lossless formats:</b> FLAC, ALAC, WavPack
+        """)
+        formats_text.setWordWrap(True)
+        formats_text.setStyleSheet("color: #34495e; line-height: 1.4;")
+        formats_layout.addWidget(formats_text)
+        layout.addWidget(formats_group)
+
+        # Features section
+        features_group = QGroupBox("Available Features")
+        features_layout = QVBoxLayout(features_group)
+        
+        features_text = QLabel("""
+<b>Overview Tab:</b><br>
+   • File metadata (format, duration, sample rate, bit depth)<br>
+   • Channel information and time delay calculation<br>
+   • Basic waveform visualization<br><br>
+
+<b>Visualizations Tab:</b><br>
+   • Detailed spectrogram analysis<br>
+   • Frequency domain visualization<br>
+   • Expandable plots for detailed examination<br><br>
+
+<b>Transcript Tab:</b><br>
+   • Speech-to-text transcription (requires Azure setup)<br>
+   • Multiple language support<br>
+   • Configurable transcription settings
+        """)
+        features_text.setWordWrap(True)
+        features_text.setStyleSheet("color: #34495e; line-height: 1.4;")
+        features_layout.addWidget(features_text)
+        layout.addWidget(features_group)
+
+        # Tips section
+        tips_group = QGroupBox("Tips & Shortcuts")
+        tips_layout = QVBoxLayout(tips_group)
+        
+        tips_text = QLabel("""
+• <b>Pin the tooltip</b> using the pin button to prevent auto-hide<br>
+• <b>Drag the tooltip</b> by the title bar or drag handle (≡)<br>
+• <b>Use channel selector</b> to analyze specific channels in stereo/multi-channel files<br>
+• <b>Open in external apps</b> using the action buttons (Audacity, file browser)<br>
+• <b>Save analysis results</b> using the "Save All" button<br>
+• <b>Recent files</b> are available in the system tray menu for quick access
+        """)
+        tips_text.setWordWrap(True)
+        tips_text.setStyleSheet("color: #34495e; line-height: 1.4;")
+        tips_layout.addWidget(tips_text)
+        layout.addWidget(tips_group)
+
+        layout.addStretch(1)
+        scroll_area.setWidget(widget)
+        return scroll_area
+
+    def _create_about_tab(self):
+        """Create About tab with author information and links"""
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(20)
+
+        # Center the content
+        layout.setAlignment(Qt.AlignCenter)
+
+        # App title and version
+        title = QLabel("Audio Tooltip")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50; margin-bottom: 10px;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        # Description
+        description = QLabel("Advanced Audio Analysis Tool for Windows Explorer")
+        description.setStyleSheet("font-size: 14px; color: #7f8c8d; font-style: italic; margin-bottom: 20px;")
+        description.setAlignment(Qt.AlignCenter)
+        layout.addWidget(description)
+
+        # Author section
+        author_group = QGroupBox("Author")
+        author_layout = QVBoxLayout(author_group)
+        author_layout.setSpacing(15)
+
+        # Author name
+        author_name = QLabel("Patrick Marmaroli")
+        author_name.setStyleSheet("font-size: 18px; font-weight: bold; color: #2c3e50;")
+        author_name.setAlignment(Qt.AlignCenter)
+        author_layout.addWidget(author_name)
+
+        # LinkedIn link
+        linkedin_label = QLabel('Professional Profile: <a href="https://www.linkedin.com/in/pmarmaroli/" style="color: #0077B5; text-decoration: none;">LinkedIn</a>')
+        linkedin_label.setOpenExternalLinks(True)
+        linkedin_label.setAlignment(Qt.AlignCenter)
+        linkedin_label.setStyleSheet("font-size: 14px; padding: 5px;")
+        author_layout.addWidget(linkedin_label)
+
+        layout.addWidget(author_group)
+
+        # Technical details
+        tech_group = QGroupBox("Technical Information")
+        tech_layout = QVBoxLayout(tech_group)
+        
+        tech_text = QLabel("""
+<b>Built with:</b><br>
+• Python 3.11+ with PyQt5 for the user interface<br>
+• librosa and soundfile for advanced audio processing<br>
+• matplotlib for scientific visualization<br>
+• Azure Cognitive Services for speech transcription<br>
+• Windows API integration for Explorer context<br><br>
+
+<b>Features:</b><br>
+• Real-time audio analysis and visualization<br>
+• Multi-channel audio support with time delay calculation<br>
+• Integration with Windows Explorer and system tray<br>
+• Extensible architecture for additional audio processing<br>
+• Professional-grade audio format support
+        """)
+        tech_text.setWordWrap(True)
+        tech_text.setStyleSheet("color: #34495e; line-height: 1.4;")
+        tech_layout.addWidget(tech_text)
+        layout.addWidget(tech_group)
+
+        # Copyright notice
+        copyright_label = QLabel("© 2024 Patrick Marmaroli. All rights reserved.")
+        copyright_label.setAlignment(Qt.AlignCenter)
+        copyright_label.setStyleSheet("font-size: 12px; color: #95a5a6; margin-top: 20px;")
+        layout.addWidget(copyright_label)
+
+        layout.addStretch(1)
+        scroll_area.setWidget(widget)
+        return scroll_area
+
     def update_channel_delay(self, delay_ms=None):
         """Display channel delay with consistent visibility and matching font style"""
         # Create the delay label if it doesn't exist
@@ -879,22 +1066,34 @@ class EnhancedTooltip(QWidget):
 
         # Always show the label with appropriate text and style
         if self.num_channels > 1:
-            if delay_ms is not None and abs(delay_ms) > 0.01:
-                direction = "right→left" if delay_ms > 0 else "left→right"
-                self.delay_label.setText(
-                    f"Time Delay: {abs(delay_ms):.2f} ms ({direction})")
-                self.delay_label.setStyleSheet(f"""
-                    color: #006600;
-                    font-weight: bold;
-                    {base_style}
-                """)
-            else:
+            # If delay_ms is provided, always show the measured value.
+            # For very small delays (near zero) show a "not detected / near zero" note.
+            if delay_ms is None:
                 self.delay_label.setText("Time Delay: not detected")
                 self.delay_label.setStyleSheet(f"""
                     color: #666666;
                     font-style: italic;
                     {base_style}
                 """)
+            else:
+                direction = "right→left" if delay_ms > 0 else "left→right"
+                if abs(delay_ms) <= 0.01:
+                    # Very small or zero delay — report it but mark as near zero
+                    self.delay_label.setText(
+                        f"Time Delay: {abs(delay_ms):.2f} ms (not detected / near zero)")
+                    self.delay_label.setStyleSheet(f"""
+                        color: #666666;
+                        font-style: italic;
+                        {base_style}
+                    """)
+                else:
+                    self.delay_label.setText(
+                        f"Time Delay: {abs(delay_ms):.2f} ms ({direction})")
+                    self.delay_label.setStyleSheet(f"""
+                        color: #006600;
+                        font-weight: bold;
+                        {base_style}
+                    """)
         else:
             self.delay_label.setText("Time Delay: N/A (mono audio)")
             self.delay_label.setStyleSheet(f"""
@@ -946,7 +1145,8 @@ class EnhancedTooltip(QWidget):
             self.waveform_label.setText("No waveform available")
 
         # Update transcript
-        self.tab_widget.setTabEnabled(3, True)  # Enable transcript tab
+        # Enable the transcript tab (index 2) — avoid out-of-range index
+        self.tab_widget.setTabEnabled(2, True)  # Enable transcript tab
 
         # Update preview info with settings
         if self.settings:
