@@ -16,9 +16,10 @@ To get the latest release, go to the [Releases page](https://github.com/pmarmaro
 
 ## How to use Audio Tooltip
 
-1. Left-click an audio file in Windows Explorer
-2. Press Alt+A
-3. The analysis tooltip will appear with detailed information
+1. **Middle-click** an audio file in Windows Explorer, or
+2. **Press Alt+A** after selecting an audio file, or  
+3. **Press Alt+D** to open the drop window and drag/drop an audio file
+4. The analysis tooltip will appear with detailed information
 
 ### Tooltip Features
 
@@ -27,8 +28,26 @@ The tooltip interface provides several tabs:
 - **Overview**: Basic file information and waveform display
 - **Visualizations**: Various audio visualizations (spectrogram, mel-spectrogram, chromagram, double waveform)
 - **Transcript**: Speech-to-text transcription of full audio content
+- **How to Use**: Step-by-step usage instructions and keyboard shortcuts
+- **About**: Application information and developer details
 
-Additional controls:
+### Keyboard Shortcuts
+
+- **Alt+A**: Analyze the currently selected audio file in Windows Explorer
+- **Alt+D**: Open the drop target window for drag-and-drop file analysis
+
+### System Tray Integration
+
+Audio Tooltip runs in the system tray and provides:
+
+- **Right-click tray icon** for context menu with:
+  - Analyze File... (Middle-click / Alt+A)
+  - Open Drop Target Window (Alt+D)
+  - Recent Files access
+  - Settings...
+  - Quit
+
+### Additional Controls
 
 - Play a short preview of the audio
 - Open the full file in Audacity or your default audio player
@@ -78,7 +97,7 @@ If you encounter any issues or have questions, please contact support at [patric
 
 ## Developers
 
-- [Patrick Marmaroli](https://www.linkedin.com/in/patrickmarmaroli/) - Developer
+- [Patrick Marmaroli](https://www.linkedin.com/in/pmarmaroli/) - Developer
 - [Ergo Esken](https://www.linkedin.com/in/ergo-esken/) - Reviewer
 
 ## License
