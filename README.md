@@ -14,9 +14,10 @@ The app runs quietly in your system tray (the small icons area near your clock) 
 
 There are several ways to analyze audio files:
 
-1. Select a file in Windows Explorer and press Alt+A
-2. Right-click the app's icon in the system tray and select "Analyze File..."
-3. Open the drop target window and drag-and-drop audio files onto it
+1. **Keyboard shortcut**: Select a file in Windows Explorer and press Alt+A
+2. **Middle-click detection**: Middle-click on any audio file in Windows Explorer  
+3. **System tray**: Middle-click the app's icon in the system tray to open file dialog
+4. **Drop target window**: Press Alt+D to open a drop target window and drag-and-drop audio files onto it
 
 ## Watch our Youtube Demo
 
@@ -36,6 +37,11 @@ Additional controls:
 - Pin the tooltip to keep it visible
 - Switch between channels for multi-channel audio
 - Save analysis results to files
+
+## Keyboard Shortcuts
+
+- **Alt+A**: Analyze the currently selected audio file in Windows Explorer
+- **Alt+D**: Open the drop target window for drag-and-drop file analysis
 
 ## Why It's Useful
 
@@ -166,7 +172,9 @@ Logs are stored in:
 Common issues:
 
 - **Missing dependencies**: Ensure all packages in requirements.txt are installed
+- **Hotkeys not working**: Make sure the virtual environment is activated when running from source
 - **Audio file not recognized**: Check if the file format is supported
+- **Network files not accessible**: UNC network paths may have issues; try copying files locally first
 - **Transcription unavailable**: Verify Azure credentials in settings
 - **Incomplete transcription**: Ensure "Full file" is selected in transcription duration settings
 - **Windows security warning**: Follow the steps outlined in the security warning section

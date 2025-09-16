@@ -21,7 +21,14 @@ import time
 import threading
 import gc
 import traceback
-import keyboard
+try:
+    import keyboard
+    KEYBOARD_AVAILABLE = True
+except Exception:
+    # Keyboard module unavailable — disable hotkey features gracefully
+    keyboard = None
+    KEYBOARD_AVAILABLE = False
+import subprocess
 
 # Import PyQt components
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QCursor, QPainter
@@ -35,11 +42,6 @@ signal.signal(signal.SIGINT, signal.SIG_DFL)  # Allows CTRL+C to terminate
 
 
 # Windows integration - with graceful fallbacks
-try:
-    KEYBOARD_AVAILABLE = True
-except ImportError:
-    KEYBOARD_AVAILABLE = False
-
 try:
     import win32api
     import win32con
@@ -396,6 +398,8 @@ class AudioTooltipApp(QWidget):
     showTooltipSignal = pyqtSignal(object)
     showProgressSignal = pyqtSignal(str)
     hideProgressSignal = pyqtSignal()
+    file_detected_signal = pyqtSignal(str)
+    show_drop_window_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -432,6 +436,8 @@ class AudioTooltipApp(QWidget):
         self.showTooltipSignal.connect(self.show_tooltip_slot)
         self.showProgressSignal.connect(self.show_progress_dialog)
         self.hideProgressSignal.connect(self.hide_progress_dialog)
+        self.file_detected_signal.connect(self.analyze_file)
+        self.show_drop_window_signal.connect(self.show_drop_window_slot)
 
         # Setup system tray
         self.setup_tray()
@@ -440,7 +446,7 @@ class AudioTooltipApp(QWidget):
         # Start tracking thread if available
         self.running = True
         self.detection_active = False
-        if WINDOWS_API_AVAILABLE and KEYBOARD_AVAILABLE:
+        if WINDOWS_API_AVAILABLE or KEYBOARD_AVAILABLE:
             self.tracking_thread = threading.Thread(target=self.track_input)
             self.tracking_thread.daemon = True
             self.tracking_thread.start()
@@ -464,14 +470,35 @@ class AudioTooltipApp(QWidget):
         self.analyze_file(file_path, channel, force_refresh=True)
 
     def show_drop_window(self):
-        """Show the drop target window"""
-        if not hasattr(self, 'drop_window') or self.drop_window is None:
-            self.drop_window = DropTargetWindow()
-            self.drop_window.file_dropped.connect(self.analyze_file)
+        """Trigger showing the drop target window via signal (thread-safe)"""
+        self.module_logger.info("Alt+D pressed - emitting signal to show drop window")
+        self.show_drop_window_signal.emit()
 
-        self.drop_window.show()
-        self.drop_window.raise_()
-        self.drop_window.activateWindow()
+    def show_drop_window_slot(self):
+        """Show the drop target window (runs in main thread)"""
+        self.module_logger.info("Showing drop window in main thread")
+        try:
+            if not hasattr(self, 'drop_window') or self.drop_window is None:
+                self.module_logger.info("Creating new drop window")
+                self.drop_window = DropTargetWindow()
+                self.drop_window.file_dropped.connect(self.analyze_file)
+
+            self.module_logger.info("Showing drop window")
+            self.drop_window.show()
+            self.module_logger.info(f"Drop window visible: {self.drop_window.isVisible()}")
+            self.drop_window.raise_()
+            self.module_logger.info("Drop window raised")
+            self.drop_window.activateWindow()
+            self.module_logger.info(f"Drop window activated - active: {self.drop_window.isActiveWindow()}")
+            
+            # Try to force it to be visible and on top
+            self.drop_window.setWindowState(self.drop_window.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+            self.drop_window.setWindowFlags(self.drop_window.windowFlags() | Qt.WindowStaysOnTopHint)
+            self.drop_window.show()  # Show again after setting flags
+            self.module_logger.info("Drop window forced to top")
+        except Exception as e:
+            self.module_logger.error(f"Error showing drop window: {e}")
+            self.module_logger.error(traceback.format_exc())
 
     def setup_hotkeys(self):
         """Setup global hotkeys for the application"""
@@ -480,7 +507,8 @@ class AudioTooltipApp(QWidget):
                 # Remove all previous hotkeys to avoid duplicates
                 try:
                     keyboard.remove_hotkey('alt+a')
-                    keyboard.remove_hotkey('ctrl+shift+a')
+                    # obsolete: previously removed 'ctrl+shift+a' hotkey; no longer used
+                    # keyboard.remove_hotkey('ctrl+shift+a')
                     keyboard.remove_hotkey('alt+q')
                     keyboard.remove_hotkey('ctrl+alt+a')
                 except:
@@ -597,7 +625,7 @@ class AudioTooltipApp(QWidget):
         self.update_recent_menu()
 
         # Actions
-        analyze_action = QAction("Analyze File... (Ctrl+Shift+A)", self)
+        analyze_action = QAction("Analyze File... (Middle-click / Alt+A)", self)
         analyze_action.triggered.connect(self.open_file_dialog)
 
         # Dedicated action for analyzing selected file in Explorer
@@ -629,8 +657,12 @@ class AudioTooltipApp(QWidget):
         drop_target_action.triggered.connect(self.show_drop_window)
         tray_menu.addAction(drop_target_action)
 
-        # Add Alt+D to show the drop window
-        keyboard.add_hotkey('alt+d', self.show_drop_window, suppress=False)
+        # Add Alt+D to show the drop window (only if keyboard module is available)
+        if KEYBOARD_AVAILABLE:
+            try:
+                keyboard.add_hotkey('alt+d', self.show_drop_window, suppress=False)
+            except Exception as e:
+                self.module_logger.warning(f"Failed to register Alt+D hotkey: {e}")
 
         # Set menu and show icon
         self.tray_icon.setContextMenu(tray_menu)
@@ -1304,9 +1336,8 @@ class AudioTooltipApp(QWidget):
                                         except Exception as invoke_e:
                                             self.module_logger.error(
                                                 f"Error with QMetaObject: {invoke_e}")
-                                            # Use QTimer as fallback
-                                            QTimer.singleShot(
-                                                0, lambda fp=file_path: self.analyze_file(fp))
+                                            # Use signal as fallback
+                                            self.file_detected_signal.emit(file_path)
                                             found_audio_file = True
                                             return True
                                 except Exception as item_e:
@@ -1359,8 +1390,8 @@ class AudioTooltipApp(QWidget):
                                         if is_audio_file(file_path) and os.path.exists(file_path):
                                             self.module_logger.info(
                                                 f"Audio file selected in window under cursor: {file_path}")
-                                            QTimer.singleShot(
-                                                0, lambda fp=file_path: self.analyze_file(fp))
+                                            # Use signal instead of QTimer from background thread
+                                            self.file_detected_signal.emit(file_path)
                                             found_audio_file = True
                                             return True
                                     except Exception as item_e:
@@ -1389,8 +1420,7 @@ class AudioTooltipApp(QWidget):
                                                 if is_audio_file(file_path) and os.path.exists(file_path):
                                                     self.module_logger.info(
                                                         f"Audio file selected in other window: {file_path}")
-                                                    QTimer.singleShot(
-                                                        0, lambda fp=file_path: self.analyze_file(fp))
+                                                    self.file_detected_signal.emit(file_path)
                                                     found_audio_file = True
                                                     return True
                                             except Exception as item_e:
@@ -1412,8 +1442,7 @@ class AudioTooltipApp(QWidget):
                         if clipboard_text and os.path.exists(clipboard_text) and is_audio_file(clipboard_text):
                             self.module_logger.info(
                                 f"Found audio file in clipboard: {clipboard_text}")
-                            QTimer.singleShot(
-                                0, lambda fp=clipboard_text: self.analyze_file(fp))
+                            self.file_detected_signal.emit(clipboard_text)
                             return True
                     except Exception as clip_e:
                         self.module_logger.error(
@@ -1455,21 +1484,19 @@ class AudioTooltipApp(QWidget):
                     f"Error uninitializing COM: {uninit_e}")
 
     def track_input(self):
-        if not WINDOWS_API_AVAILABLE or not KEYBOARD_AVAILABLE:
-            self.module_logger.error(
-                "Cannot track input: missing dependencies")
+        # Require at least one input facility: Windows API (mouse) or keyboard hooks
+        if not WINDOWS_API_AVAILABLE and not KEYBOARD_AVAILABLE:
+            self.module_logger.error("Cannot track input: missing dependencies")
             return
 
         self.module_logger.info("Input tracking thread started")
 
         def on_hotkey():
-            # Only trigger when Alt+A is pressed
+            # Triggered by keyboard hotkey (Alt+A). Use same behavior as right-click gesture.
             if not self.detection_active:
                 try:
                     self.detection_active = True
-                    # Use a thread to avoid blocking the main thread
-                    detection_thread = threading.Thread(
-                        target=self.check_file_under_cursor)
+                    detection_thread = threading.Thread(target=self.check_file_under_cursor)
                     detection_thread.daemon = True
                     detection_thread.start()
                 except Exception as e:
@@ -1477,22 +1504,58 @@ class AudioTooltipApp(QWidget):
                     self.module_logger.error(traceback.format_exc())
                     self.detection_active = False
 
-        # Register Alt+A hotkey with error handling
-        try:
+        # Try to register the keyboard hotkey if available
+        if KEYBOARD_AVAILABLE:
             try:
-                keyboard.remove_hotkey('alt+a')
-            except:
-                pass
-            keyboard.add_hotkey('alt+a', on_hotkey, suppress=False)
-            self.module_logger.info("Hotkey registered successfully")
-        except Exception as reg_e:
-            self.module_logger.error(f"Failed to register hotkey: {reg_e}")
+                try:
+                    keyboard.remove_hotkey('alt+a')
+                except:
+                    pass
+                keyboard.add_hotkey('alt+a', on_hotkey, suppress=False)
+                self.module_logger.info("Hotkey registered successfully")
+            except Exception as reg_e:
+                self.module_logger.error(f"Failed to register hotkey: {reg_e}")
+
+        # Mouse triple-right-click detection (Windows only)
+        right_button_prev = False
+        click_count = 0
+        last_click_time = 0.0
+        click_threshold = 1.2  # seconds between clicks to count as consecutive
+
+        # Poll middle mouse button (single click) using Win32 API if available
+        middle_button_prev = False
 
         while self.running:
             try:
-                time.sleep(0.05)
+                # Poll middle mouse button (single click) using Win32 API if available
+                if WINDOWS_API_AVAILABLE:
+                    try:
+                        state = win32api.GetAsyncKeyState(0x04)  # VK_MBUTTON
+                        mouse_down = (state & 0x8000) != 0
+                        # Detect edge from up -> down to debounce (one trigger per physical click)
+                        if mouse_down and not middle_button_prev:
+                            self.module_logger.debug("Middle click detected")
+                            if not self.detection_active:
+                                try:
+                                    self.detection_active = True
+                                    detection_thread = threading.Thread(target=self.check_file_under_cursor)
+                                    detection_thread.daemon = True
+                                    detection_thread.start()
+                                except Exception as e:
+                                    self.module_logger.error(f"Error starting detection thread: {e}")
+                        middle_button_prev = mouse_down
+                    except Exception as mouse_e:
+                        self.module_logger.debug(f"Mouse polling error: {mouse_e}")
+
+                # Sleep briefly to avoid busy loop
+                try:
+                    time.sleep(0.05)
+                except Exception as sleep_e:
+                    self.module_logger.error(f"Error in input tracking sleep: {sleep_e}")
+                    time.sleep(0.5)
+
             except Exception as e:
-                self.module_logger.error(f"Error in input tracking: {e}")
+                self.module_logger.error(f"Error in input tracking main loop: {e}")
                 self.module_logger.error(traceback.format_exc())
                 time.sleep(0.5)
 

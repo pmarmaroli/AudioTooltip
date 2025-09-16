@@ -127,6 +127,9 @@ class AudioPlayback:
 
             temp_dir = tempfile.gettempdir()
             temp_filename = f"preview_{int(time.time())}_{os.path.basename(file_path)}"
+            # Ensure the temp filename has the same extension as the source (or .wav fallback)
+            if not temp_filename.lower().endswith(file_ext):
+                temp_filename = temp_filename + file_ext
             temp_path = os.path.join(temp_dir, temp_filename)
 
             self.logger.info(
