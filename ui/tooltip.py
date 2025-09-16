@@ -57,6 +57,7 @@ class EnhancedTooltip(QWidget):
         self.on_visualization_requested = None  # Callback for visualization requests
         self.on_transcription_requested = None  # Callback for transcription requests
         self.on_refresh_requested = None  # Callback for refresh button
+        self._viz_generated = False  # Track if visualization has been explicitly generated
 
         # Initialize UI
         self._init_ui()
@@ -402,8 +403,9 @@ class EnhancedTooltip(QWidget):
             except Exception as e:
                 self.logger.error(f"Error saving waveform: {e}")
 
-        # Save visualization image
-        if self.viz_display.pixmap() and not self.viz_display.pixmap().isNull():
+        # Save visualization image (only if it has been explicitly generated)
+        if (self.viz_display.pixmap() and not self.viz_display.pixmap().isNull() and
+            hasattr(self, '_viz_generated') and self._viz_generated):
             viz_type = self.viz_combo_menu.text().lower().replace('-', '_')
             viz_path = os.path.join(
                 directory, f"{base_name}{channel_suffix}_{viz_type}.png")
@@ -1108,6 +1110,7 @@ class EnhancedTooltip(QWidget):
     def update_content(self, file_path, metadata, viz_buffer, transcription, num_channels=1, current_channel=0, delay_ms=None):
         """Update the tooltip content with analysis results."""
         self.current_file = file_path
+        self._viz_generated = False  # Reset visualization flag for new file
 
         # Update channels
         self.update_channels(num_channels, current_channel)

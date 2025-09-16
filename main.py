@@ -389,6 +389,7 @@ def update_visualization(self, result):
         ))
         self.tooltip.viz_combo_menu.setText(viz_type)
         self.tooltip._change_visualization(viz_type)
+        self.tooltip._viz_generated = True  # Mark visualization as explicitly generated
 
 
 class AudioTooltipApp(QWidget):
@@ -635,6 +636,10 @@ class AudioTooltipApp(QWidget):
         analyze_selected_action.setToolTip(
             "Try to analyze the currently selected file in Explorer")
 
+        # Add help/instructions action
+        help_action = QAction("Show Instructions", self)
+        help_action.triggered.connect(self.show_help_notification)
+
         settings_action = QAction("Settings...", self)
         settings_action.triggered.connect(self.show_settings)
 
@@ -648,6 +653,7 @@ class AudioTooltipApp(QWidget):
         tray_menu.addAction(analyze_selected_action)  # Add the new action
         tray_menu.addMenu(self.recent_menu)
         tray_menu.addSeparator()
+        tray_menu.addAction(help_action)
         tray_menu.addAction(settings_action)
         tray_menu.addSeparator()
         tray_menu.addAction(quit_action)
@@ -671,15 +677,48 @@ class AudioTooltipApp(QWidget):
         # Connect activation signal
         self.tray_icon.activated.connect(self.tray_icon_clicked)
 
-        # Show startup tooltip
+        # Show startup tooltip immediately
         self.tray_icon.showMessage(
             "Audio Tooltip Ready",
-            "Left-click an audio file and press Alt+A to analyze it. The very first analysis may take several minutes. Please be patient. Following ones will be faster.",
+            "3 ways to analyze audio: 1) Middle-click on an audio file, 2) Select a file and press Alt+A, or 3) Press Alt+D for drop window. Check system tray (hidden icons) for settings. First analysis may take time.",
             QSystemTrayIcon.Information,
             10000
         )
 
+        # Also show a delayed notification in case user missed the first one
+        QTimer.singleShot(5000, self.show_delayed_help)
+
         self.module_logger.info("System tray initialized")
+
+    def show_help_notification(self):
+        """Show the help/instructions notification"""
+        self.module_logger.info("Show Instructions menu clicked")
+        print("DEBUG: Show Instructions clicked!")  # Debug output
+        
+        # Show both message box and tray notification for testing
+        QMessageBox.information(
+            None,
+            "Audio Tooltip - How to Use",
+            "3 ways to analyze audio:\n\n1) Middle-click on an audio file\n2) Select a file and press Alt+A\n3) Press Alt+D for drop window\n\nCheck system tray (hidden icons) for settings.\nFirst analysis may take time."
+        )
+        
+        self.tray_icon.showMessage(
+            "Audio Tooltip - How to Use",
+            "3 ways to analyze audio:\n1) Middle-click on an audio file\n2) Select a file and press Alt+A\n3) Press Alt+D for drop window\n\nCheck system tray (hidden icons) for settings.\nFirst analysis may take time.",
+            QSystemTrayIcon.Information,
+            15000  # Show for 15 seconds
+        )
+        
+        print("DEBUG: Both message box and notification should have been shown!")  # Debug output
+
+    def show_delayed_help(self):
+        """Show a delayed help notification"""
+        self.tray_icon.showMessage(
+            "Audio Tooltip Ready!",
+            "Tip: Right-click this icon for menu, or try middle-clicking an audio file!",
+            QSystemTrayIcon.Information,
+            5000
+        )
 
     def update_recent_menu(self):
         """Update the recent files menu"""
@@ -1093,6 +1132,7 @@ class AudioTooltipApp(QWidget):
             ))
             self.tooltip.viz_combo_menu.setText(viz_type)
             self.tooltip._change_visualization(viz_type)  # Update description
+            self.tooltip._viz_generated = True  # Mark visualization as explicitly generated
 
     def handle_worker_error(self, error_message):
         """Handle worker thread errors"""
@@ -1861,6 +1901,13 @@ class AudioTooltipApp(QWidget):
             self.module_logger.info("Audio file detection completed")
 
 
+def finish_startup_sequence(splash, tooltip_app):
+    """Finish the startup sequence by closing splash and showing instructions"""
+    if splash:
+        splash.finish(None)
+    # Show instructions dialog after a brief delay
+    QTimer.singleShot(500, tooltip_app.show_help_notification)
+
 # Add to main.py (near the top of the main() function)
 def main(app=None, splash=None):
     """Main application entry point"""
@@ -1883,7 +1930,16 @@ def main(app=None, splash=None):
         if splash:
             print("Updating splash message")
             splash.showMessage("Initializing components...",
-                               Qt.AlignBottom | Qt.AlignCenter, Qt.black)
+                               Qt.AlignBottom | Qt.AlignCenter, QColor(255, 255, 255))
+            app.processEvents()
+            # Add a small delay to make splash more visible
+            QTimer.singleShot(1500, lambda: None)
+            app.processEvents()
+
+        # Update splash for app creation
+        if splash:
+            splash.showMessage("Creating application...",
+                               Qt.AlignBottom | Qt.AlignCenter, QColor(255, 255, 255))
             app.processEvents()
 
         # Create main app with explicit error handling
@@ -1891,10 +1947,17 @@ def main(app=None, splash=None):
         tooltip_app = AudioTooltipApp()
         print("AudioTooltipApp created successfully")
 
-        # Close splash if it exists
+        # Update splash for final step
         if splash:
-            print("Finishing splash screen")
-            splash.finish(None)
+            splash.showMessage("Starting services...",
+                               Qt.AlignBottom | Qt.AlignCenter, QColor(255, 255, 255))
+            app.processEvents()
+            # Keep splash visible a bit longer, then show instructions
+            QTimer.singleShot(2000, lambda: finish_startup_sequence(splash, tooltip_app))
+        else:
+            print("No splash to finish")
+            # Show instructions immediately if no splash
+            QTimer.singleShot(1000, tooltip_app.show_help_notification)
 
         # Start the event loop
         print("Starting event loop")
@@ -1922,22 +1985,48 @@ if __name__ == '__main__':
 
     # Create and show splash screen BEFORE any other initialization
     print("Setting up splash screen...")
-    splash_pixmap = QPixmap(400, 250)
-    splash_pixmap.fill(QColor(245, 245, 245))
+    splash_pixmap = QPixmap(500, 300)
+    splash_pixmap.fill(QColor(50, 50, 80))  # Dark blue background
     print("Splash pixmap created")
 
-    # Draw text on the pixmap
+    # Draw content on the pixmap
     print("Creating painter...")
     painter = QPainter(splash_pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
     painter.setRenderHint(QPainter.TextAntialiasing)
-    print("Painter configured")
+    
+    # Title
+    title_font = QFont("Arial", 24, QFont.Bold)
+    painter.setFont(title_font)
+    painter.setPen(QColor(255, 255, 255))  # White text
+    painter.drawText(20, 50, "Audio Tooltip")
+    
+    # Version
+    version_font = QFont("Arial", 12)
+    painter.setFont(version_font)
+    painter.setPen(QColor(200, 200, 200))  # Light gray
+    painter.drawText(20, 80, "v2.0.0 - Audio Analysis Tool")
+    
+    # Loading message
+    loading_font = QFont("Arial", 14)
+    painter.setFont(loading_font)
+    painter.setPen(QColor(100, 150, 255))  # Light blue
+    painter.drawText(20, 220, "Loading components...")
+    
+    # Progress bar visual
+    painter.setPen(QColor(100, 150, 255))
+    painter.drawRect(20, 240, 460, 20)
+    painter.fillRect(22, 242, 456, 16, QColor(100, 150, 255))
+    
+    painter.end()
+    print("Splash content painted")
 
-    # Rest of the splash screen setup with print statements...
-    print("About to show splash screen")
     # Create splash screen using the painted pixmap
     splash = QSplashScreen(splash_pixmap)
-    print("Splash screen created")
+    splash.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.SplashScreen)
+    splash.show()
+    app.processEvents()
+    print("Splash screen shown")
 
     # More execution...
     print("About to call main()")
