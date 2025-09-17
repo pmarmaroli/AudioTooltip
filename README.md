@@ -84,6 +84,32 @@ audio-analyzer/
 └── requirements.txt           # Dependencies
 ```
 
+## System Requirements
+
+### Operating System
+- **Windows 7 or later** (Windows 10/11 recommended)
+- **macOS and Linux are NOT supported**
+
+AudioTooltip is designed specifically for Windows and uses Windows-specific features that are not available on other operating systems:
+- Windows Registry integration for auto-startup
+- Windows API integration for File Explorer interaction
+- Windows COM objects for shell integration
+- Windows system tray functionality
+- Windows-specific hotkey handling
+
+### Hardware Requirements
+- **RAM:** 4GB minimum (8GB recommended for large audio files)
+- **Storage:** 100MB for application + additional space for temporary files during analysis
+- **Audio:** Sound card or audio device (for audio playback features)
+- **Display:** Any resolution (application adapts to screen size)
+
+### Software Dependencies (Pre-built Version)
+The pre-built executable includes all necessary dependencies. No additional software installation required.
+
+### Optional Features
+- **Azure Speech Services account** (for speech transcription features)
+- **Audacity** (for "Open in Audacity" feature - automatically detected if installed)
+
 ## Installation
 
 ### Option 1: Download the Pre-built Release
