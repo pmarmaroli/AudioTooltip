@@ -119,6 +119,32 @@ AudioTooltip provides a consistent startup experience whether launched manually 
 
 This ensures users always see the instructions and understand how to use the application, regardless of how it was started.
 
+## Uninstalling AudioTooltip
+
+AudioTooltip includes a convenient cleanup script to completely remove the application and all its settings from your system.
+
+### Using the Cleanup Script
+
+1. **Run cleanup.ps1:**
+   - Right-click on `cleanup.ps1` (included with the application)
+   - Select "Run with PowerShell"
+   - Or open PowerShell as Administrator and run: `.\cleanup.ps1`
+
+2. **What the script does:**
+   - Stops any running AudioTooltip processes
+   - Removes the application from Windows startup (if enabled)
+   - Deletes all application settings and configuration files
+   - Removes cached files and temporary data
+   - Cleans up registry entries related to startup
+   - Provides a complete uninstallation
+
+3. **Manual cleanup (if needed):**
+   - Delete the AudioTooltip.exe file
+   - Remove any shortcuts from Desktop or Start Menu
+   - Delete the application folder if using the folder version
+
+The cleanup script ensures a thorough removal of AudioTooltip from your system, making it easy to uninstall or prepare for a fresh installation.
+
 ## Need Help?
 
 If you encounter any issues or have questions, please contact support at [patrick.marmaroli@gmail.com] or visit our GitHub repository at [https://github.com/pmarmaroli/AudioTooltip](https://github.com/pmarmaroli/AudioTooltip).
