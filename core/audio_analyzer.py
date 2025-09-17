@@ -1334,7 +1334,7 @@ class AudioAnalyzer:
                 hop_length=hop_length,
                 x_axis='time',
                 y_axis='hz',
-                cmap='viridis',
+                cmap='jet',
                 ax=ax
             )
             ax.set_title('Spectrogram', fontsize=12)
