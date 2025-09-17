@@ -17,6 +17,7 @@ import os
 import wave
 import sys
 import winreg
+from utils.startup_utils import StartupManager
 
 
 class SettingsDialog(QDialog):
@@ -45,6 +46,9 @@ class SettingsDialog(QDialog):
 
         self.settings = settings or QSettings(
             "AudioTooltip", "EnhancedPreferences")
+        
+        # Initialize startup manager
+        self.startup_manager = StartupManager()
 
         self._init_ui()
         self._load_settings()
@@ -83,57 +87,30 @@ class SettingsDialog(QDialog):
     def _toggle_startup(self, state):
         """Toggle startup with Windows"""
         try:
-            if state == Qt.Checked:
-                self._enable_startup()
+            enabled = state == Qt.Checked
+            success = self.startup_manager.set_startup_enabled(enabled)
+            
+            if not success:
+                # Reset checkbox to previous state
+                self.startup_check.blockSignals(True)
+                self.startup_check.setChecked(not enabled)
+                self.startup_check.blockSignals(False)
+                
+                QMessageBox.warning(
+                    self,
+                    "Startup Setting Error",
+                    "Could not change startup setting. Please check permissions."
+                )
             else:
-                self._disable_startup()
+                # Save setting to preferences
+                self.settings.setValue("start_with_windows", enabled)
+                
         except Exception as e:
             QMessageBox.warning(
                 self,
                 "Startup Setting Error",
                 f"Could not change startup setting: {str(e)}"
             )
-
-    def _enable_startup(self):
-        """Add application to Windows startup"""
-        try:
-            # Get path to the executable
-            if getattr(sys, 'frozen', False):
-                # If running as exe (PyInstaller)
-                executable_path = f'"{sys.executable}"'
-            else:
-                # If running as script
-                executable_path = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
-
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-                0,
-                winreg.KEY_SET_VALUE
-            )
-            winreg.SetValueEx(key, "AudioTooltip", 0,
-                              winreg.REG_SZ, executable_path)
-            winreg.CloseKey(key)
-        except Exception as e:
-            raise Exception(f"Failed to add to startup: {str(e)}")
-
-    def _disable_startup(self):
-        """Remove application from Windows startup"""
-        try:
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-                0,
-                winreg.KEY_SET_VALUE
-            )
-            try:
-                winreg.DeleteValue(key, "AudioTooltip")
-            except FileNotFoundError:
-                # Key doesn't exist, which is fine
-                pass
-            winreg.CloseKey(key)
-        except Exception as e:
-            raise Exception(f"Failed to remove from startup: {str(e)}")
 
     def _create_general_tab(self):
         """Create general settings tab"""
@@ -481,23 +458,16 @@ class SettingsDialog(QDialog):
         self._toggle_transcription_options(
             Qt.Checked if self.enable_transcription_check.isChecked() else Qt.Unchecked)
 
-        # Check if app is in startup
-        try:
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-                0,
-                winreg.KEY_READ
-            )
-            try:
-                winreg.QueryValueEx(key, "AudioTooltip")
-                self.startup_check.setChecked(True)
-            except FileNotFoundError:
-                self.startup_check.setChecked(False)
-            winreg.CloseKey(key)
-        except Exception:
-            # Default to checked if we can't read registry
-            self.startup_check.setChecked(True)
+        # Check startup setting - use saved preference first, then check registry
+        saved_startup = self.settings.value("start_with_windows", "true") == "true"
+        actual_startup = self.startup_manager.is_startup_enabled()
+        
+        # If there's a mismatch, use the registry state and update settings
+        if saved_startup != actual_startup:
+            self.settings.setValue("start_with_windows", actual_startup)
+            saved_startup = actual_startup
+        
+        self.startup_check.setChecked(saved_startup)
 
     def _apply_settings(self):
         """Apply current settings to QSettings"""

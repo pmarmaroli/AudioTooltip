@@ -91,6 +91,34 @@ A specialized visualization for stereo audio files:
 - Right channel (blue) shown as negative values
 - Easily identify stereo imaging and channel differences
 
+## Windows Startup Behavior
+
+AudioTooltip can automatically start when Windows boots up, providing seamless background audio analysis capabilities.
+
+### How to Enable Auto-Startup
+
+1. **Through Settings Dialog:**
+   - Right-click the system tray icon
+   - Select "Settings..."
+   - In the "General" tab, check "Start AudioTooltip when Windows starts"
+   - Click "OK" to save
+
+2. **Manual Setup (Alternative):**
+   - Press `Win + R`, type `shell:startup`, press Enter
+   - Copy a shortcut to `AudioTooltip.exe` into the startup folder
+
+### Startup Behavior
+
+AudioTooltip provides a consistent startup experience whether launched manually or automatically by Windows:
+
+**All Launch Methods:**
+- Shows splash screen with loading progress
+- Displays welcome instructions after startup
+- Full user interface experience
+- Ready for immediate use via hotkeys (Alt+A, Alt+D)
+
+This ensures users always see the instructions and understand how to use the application, regardless of how it was started.
+
 ## Need Help?
 
 If you encounter any issues or have questions, please contact support at [patrick.marmaroli@gmail.com] or visit our GitHub repository at [https://github.com/pmarmaroli/AudioTooltip](https://github.com/pmarmaroli/AudioTooltip).
