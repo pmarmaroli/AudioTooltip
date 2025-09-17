@@ -2022,7 +2022,7 @@ if __name__ == '__main__':
     version_font = QFont("Arial", 12)
     painter.setFont(version_font)
     painter.setPen(QColor(200, 200, 200))  # Light gray
-    painter.drawText(20, 80, "v2.0.0 - Audio Analysis Tool")
+    painter.drawText(20, 80, "v2.0.1 - Audio Analysis Tool")
     
     # Loading message
     loading_font = QFont("Arial", 14)
