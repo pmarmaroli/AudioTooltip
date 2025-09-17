@@ -112,6 +112,28 @@ class SettingsDialog(QDialog):
                 f"Could not change startup setting: {str(e)}"
             )
 
+    def _toggle_logging(self, state):
+        """Toggle application logging"""
+        enabled = state == Qt.Checked
+        self.settings.setValue("enable_logging", enabled)
+        
+        if enabled:
+            QMessageBox.information(
+                self,
+                "Logging Enabled",
+                "Application logging has been enabled.\n\n"
+                "Logs will be saved to:\n"
+                f"{os.path.expandvars('%LOCALAPPDATA%')}\\AudioTooltip_Logs\\\n\n"
+                "Please restart the application for this change to take effect."
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Logging Disabled",
+                "Application logging has been disabled.\n\n"
+                "Please restart the application for this change to take effect."
+            )
+
     def _create_general_tab(self):
         """Create general settings tab"""
         tab = QWidget()
@@ -141,6 +163,24 @@ class SettingsDialog(QDialog):
 
         # Add to layout
         layout.addWidget(interface_group)
+
+        # Logging group
+        logging_group = QGroupBox("Logging & Diagnostics")
+        logging_layout = QFormLayout(logging_group)
+
+        self.enable_logging_check = QCheckBox("Enable application logging")
+        self.enable_logging_check.setChecked(False)  # Disabled by default
+        self.enable_logging_check.stateChanged.connect(self._toggle_logging)
+
+        # Add help text
+        logging_help = QLabel("When enabled, logs are saved to:\n%LOCALAPPDATA%\\AudioTooltip_Logs\\")
+        logging_help.setStyleSheet("color: #666666; font-size: 9pt;")
+        logging_help.setWordWrap(True)
+
+        logging_layout.addRow("", self.enable_logging_check)
+        logging_layout.addRow("", logging_help)
+
+        layout.addWidget(logging_group)
         layout.addStretch(1)
 
         return tab
@@ -468,6 +508,10 @@ class SettingsDialog(QDialog):
             saved_startup = actual_startup
         
         self.startup_check.setChecked(saved_startup)
+
+        # Load logging setting (default: disabled)
+        logging_enabled = self.settings.value("enable_logging", "false") == "true"
+        self.enable_logging_check.setChecked(logging_enabled)
 
     def _apply_settings(self):
         """Apply current settings to QSettings"""

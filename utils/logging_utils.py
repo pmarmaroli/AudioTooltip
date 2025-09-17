@@ -19,7 +19,8 @@ def setup_logging(
     max_size: int = 5 * 1024 * 1024,  # 5MB
     backup_count: int = 5,
     console_output: bool = True,
-    module_levels: Optional[Dict[str, int]] = None
+    module_levels: Optional[Dict[str, int]] = None,
+    enabled: bool = True
 ) -> logging.Logger:
     """
     Configure application logging with rotating file handler and optional console output.
@@ -28,6 +29,7 @@ def setup_logging(
         log_dir: Directory for log files (uses ~/AppData/AudioTooltip_Logs on Windows, 
                  ~/.local/share/AudioTooltip_Logs on Linux/Mac if None)
         log_level: Root logger level
+        enabled: If False, sets up minimal logging (WARNING level, no file output)
         max_size: Maximum log file size before rotation
         backup_count: Number of backup log files to keep
         console_output: Whether to output logs to console
@@ -50,10 +52,18 @@ def setup_logging(
 
     # Set up root logger
     root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
-
+    
     # Clear existing handlers
     root_logger.handlers = []
+    
+    # If logging is disabled, set up minimal logging
+    if not enabled:
+        root_logger.setLevel(logging.WARNING)  # Only show warnings and errors
+        # Add null handler to prevent logging messages
+        root_logger.addHandler(logging.NullHandler())
+        return root_logger
+    
+    root_logger.setLevel(log_level)
 
     # Configure log file path
     log_file = os.path.join(log_dir, "audio_tooltip.log")
