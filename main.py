@@ -21,6 +21,7 @@ import time
 import threading
 import gc
 import traceback
+import argparse
 try:
     import keyboard
     KEYBOARD_AVAILABLE = True
@@ -402,9 +403,10 @@ class AudioTooltipApp(QWidget):
     file_detected_signal = pyqtSignal(str)
     show_drop_window_signal = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, startup_mode=False):
         super().__init__()
         self.setWindowTitle("Audio Tooltip")
+        self.startup_mode = startup_mode
 
         # Setup logging
         self.logger = setup_logging()
@@ -1909,9 +1911,13 @@ def finish_startup_sequence(splash, tooltip_app):
     QTimer.singleShot(500, tooltip_app.show_help_notification)
 
 # Add to main.py (near the top of the main() function)
-def main(app=None, splash=None):
+def main(app=None, splash=None, args=None):
     """Main application entry point"""
     print("Main function started")
+    
+    # Handle startup/minimized mode
+    startup_mode = args and (args.startup or args.minimized) if args else False
+    print(f"Startup mode: {startup_mode}")
 
     print(f"Python version: {sys.version}")
     import PyQt5
@@ -1944,10 +1950,10 @@ def main(app=None, splash=None):
 
         # Create main app with explicit error handling
         print("About to create AudioTooltipApp")
-        tooltip_app = AudioTooltipApp()
+        tooltip_app = AudioTooltipApp(startup_mode=startup_mode)
         print("AudioTooltipApp created successfully")
 
-        # Update splash for final step
+        # Update splash for final step and always show instructions
         if splash:
             splash.showMessage("Starting services...",
                                Qt.AlignBottom | Qt.AlignCenter, QColor(255, 255, 255))
@@ -1955,7 +1961,7 @@ def main(app=None, splash=None):
             # Keep splash visible a bit longer, then show instructions
             QTimer.singleShot(2000, lambda: finish_startup_sequence(splash, tooltip_app))
         else:
-            print("No splash to finish")
+            print("No splash to finish - showing instructions")
             # Show instructions immediately if no splash
             QTimer.singleShot(1000, tooltip_app.show_help_notification)
 
@@ -1973,6 +1979,14 @@ def main(app=None, splash=None):
 
 if __name__ == '__main__':
     print("Starting application initialization...")
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='AudioTooltip - Audio Analysis Tool')
+    parser.add_argument('--startup', action='store_true', 
+                       help='Start minimized to system tray (for Windows startup)')
+    parser.add_argument('--minimized', action='store_true',
+                       help='Start minimized to system tray')
+    args = parser.parse_args()
 
     # Create application first
     app = QApplication(sys.argv)
@@ -1983,7 +1997,7 @@ if __name__ == '__main__':
     app.setOrganizationName("MCDE - FHL 2025")
     print("Application configured")
 
-    # Create and show splash screen BEFORE any other initialization
+    # Always create and show splash screen
     print("Setting up splash screen...")
     splash_pixmap = QPixmap(500, 300)
     splash_pixmap.fill(QColor(50, 50, 80))  # Dark blue background
@@ -2030,4 +2044,4 @@ if __name__ == '__main__':
 
     # More execution...
     print("About to call main()")
-    sys.exit(main(app, splash))
+    sys.exit(main(app, splash, args))
