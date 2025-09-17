@@ -36,6 +36,8 @@ a = Analysis(
     ] + azure_binaries if azure_speech_dir else azure_binaries,
     datas=[
         ('resources', 'resources'),  # Include resources directory
+        ('cleanup.ps1', '.'),  # Include cleanup script in root of dist
+        ('installation-guide.md', '.'),  # Include installation guide in root of dist
     ] + azure_datas,
     hiddenimports=[
         'librosa', 'soundfile', 'numpy', 'matplotlib', 'pynput', 'keyboard',
@@ -59,17 +61,13 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='AudioTooltip',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,  # Hide console window
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -77,4 +75,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='resources/icons/app_icon.png',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='AudioTooltip',
 )
