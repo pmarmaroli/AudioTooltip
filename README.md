@@ -15,8 +15,8 @@ The app runs quietly in your system tray (the small icons area near your clock) 
 There are several ways to analyze audio files:
 
 1. **Keyboard shortcut**: Select a file in Windows Explorer and press Alt+A
-2. **Middle-click detection**: Middle-click on any audio file in Windows Explorer  
-3. **System tray**: Middle-click the app's icon in the system tray to open file dialog
+2. **Middle-click detection**: Hold middle-click on any audio file in Windows Explorer  
+3. **System tray**: Right-click the app's icon for menu, middle-click for quick file dialog
 4. **Drop target window**: Press Alt+D to open a drop target window and drag-and-drop audio files onto it
 
 ## Watch our Youtube Demo
@@ -63,8 +63,7 @@ We hope this tool can be helpful for:
 audio-analyzer/
 │
 ├── core/                      # Core analysis functionality
-│   ├── audio_analyzer.py      # Audio loading and analysis
-│   ├── audio_features.py      # Feature extraction
+│   ├── audio_analyzer.py      # Audio loading, analysis, and feature extraction
 │   └── audio_playback.py      # Audio playback functionality
 │
 ├── ui/                        # User interface components
@@ -123,7 +122,7 @@ The pre-built executable includes all necessary dependencies. No additional soft
 
 #### Requirements
 
-- Python 3.7+
+- Python 3.11+
 - PyQt5
 - librosa
 - numpy
@@ -160,14 +159,14 @@ python main.py
 4. Or build your own executable:
 
 ```bash
-# For basic build
-pyinstaller main.py
+# Recommended: Use the build script (includes cleanup.ps1 and installation-guide.md)
+.\build_release.bat
 
-# For optimized build using the provided spec file
-pyinstaller .\AudioTooltip.spec --noconfirm
+# Alternative: Manual build using PyInstaller
+pyinstaller .\AudioTooltip.spec --clean
 ```
 
-The optimized build will create a `dist/AudioTooltip` folder containing the executable and all necessary files.
+The build script will create `dist/AudioTooltip.exe` plus additional user files (`cleanup.ps1`, `installation-guide.md`).
 
 ## Development
 
@@ -181,11 +180,11 @@ The modular architecture makes it easy to extend:
 
 ### Building a Standalone Application
 
-You can package the application using PyInstaller:
+You can package the application using the build script:
 
 ```bash
 pip install pyinstaller
-pyinstaller .\AudioTooltip.spec --noconfirm
+.\build_release.bat
 ```
 
 ## Troubleshooting
@@ -211,7 +210,7 @@ If you encounter any issues or have questions, please contact support at [patric
 
 ## Developers
 
-- [Patrick Marmaroli](https://www.linkedin.com/in/patrickmarmaroli/) - Developer
+- [Patrick Marmaroli](https://www.linkedin.com/in/pmarmaroli/) - Developer
 - [Ergo Esken](https://www.linkedin.com/in/ergo-esken/) - QA Auditor
 
 ## License
