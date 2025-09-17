@@ -408,15 +408,18 @@ class AudioTooltipApp(QWidget):
         self.setWindowTitle("Audio Tooltip")
         self.startup_mode = startup_mode
 
-        # Setup logging
-        self.logger = setup_logging()
-        self.module_logger = get_module_logger("AudioTooltipApp")
-        self.module_logger.info(
-            f"Starting application. Qt version: {QT_VERSION_STR}")
-
-        # Initialize settings
+        # Initialize settings first (needed to check logging preference)
         self.settings = QSettings("AudioTooltip", "EnhancedPreferences")
         self.load_default_settings()
+
+        # Setup logging based on user preference (disabled by default)
+        logging_enabled = self.settings.value("enable_logging", "false") == "true"
+        self.logger = setup_logging(enabled=logging_enabled)
+        
+        self.module_logger = get_module_logger("AudioTooltipApp")
+        if logging_enabled:
+            self.module_logger.info(f"Starting application. Qt version: {QT_VERSION_STR}")
+            self.module_logger.info("Logging enabled by user preference")
 
         # Initialize components
         self.tooltip = EnhancedTooltip(settings=self.settings)
