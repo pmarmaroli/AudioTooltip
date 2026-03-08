@@ -77,8 +77,8 @@ class ProgressDialog(QDialog):
                 header_layout.addWidget(spinner_label)
                 header_layout.addStretch(1)
                 main_layout.addLayout(header_layout)
-        except:
-            # Fallback to simple layout without spinner
+        except Exception:
+            # Fallback to simple layout without spinner — spinner resource not embedded
             pass
 
         # Message label
