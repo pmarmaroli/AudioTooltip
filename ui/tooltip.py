@@ -225,7 +225,12 @@ class EnhancedTooltip(QWidget):
         audacity_button.setIcon(QIcon.fromTheme(
             "audio-x-generic", QIcon.fromTheme("folder-open")))
         audacity_button.clicked.connect(self._open_in_audacity)
-        audacity_button.setToolTip("Open the audio file in Audacity (or system default player if not installed)")
+        audacity_path = self._find_audacity()
+        if audacity_path:
+            audacity_button.setToolTip(f"Open in Audacity ({audacity_path})")
+        else:
+            audacity_button.setToolTip("Audacity not found — will open with system default player")
+            audacity_button.setStyleSheet("color: #888;")
 
         # Save all button
         save_button = QPushButton("Save All")
@@ -241,6 +246,19 @@ class EnhancedTooltip(QWidget):
 
         return action_layout
 
+    @staticmethod
+    def _find_audacity() -> str:
+        """Return path to Audacity exe on Windows, or empty string if not found."""
+        if os.name == 'nt':
+            candidates = [
+                os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'), 'Audacity', 'Audacity.exe'),
+                os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'), 'Audacity', 'Audacity.exe'),
+                r'C:\Program Files\Audacity\Audacity.exe',
+                r'C:\Program Files (x86)\Audacity\Audacity.exe',
+            ]
+            return next((p for p in candidates if os.path.exists(p)), "")
+        return ""
+
     def _open_in_audacity(self):
         """Open the audio file in Audacity"""
         if not self.current_file:
@@ -248,26 +266,10 @@ class EnhancedTooltip(QWidget):
 
         try:
             # Try to find Audacity executable
-            audacity_path = None
+            audacity_path = self._find_audacity()
             import subprocess
 
-            if os.name == 'nt':  # Windows
-                # Common installation paths for Audacity on Windows
-                possible_paths = [
-                    os.path.join(os.environ.get(
-                        'ProgramFiles', r'C:\Program Files'), 'Audacity', 'Audacity.exe'),
-                    os.path.join(os.environ.get(
-                        'ProgramFiles(x86)', r'C:\Program Files (x86)'), 'Audacity', 'Audacity.exe'),
-                    r'C:\Program Files\Audacity\Audacity.exe',
-                    r'C:\Program Files (x86)\Audacity\Audacity.exe'
-                ]
-
-                for path in possible_paths:
-                    if os.path.exists(path):
-                        audacity_path = path
-                        break
-
-            elif os.name == 'posix':  # macOS, Linux
+            if not audacity_path and os.name == 'posix':  # macOS, Linux
                 if os.uname().sysname == 'Darwin':  # macOS
                     audacity_path = '/Applications/Audacity.app/Contents/MacOS/Audacity'
                 else:  # Linux
