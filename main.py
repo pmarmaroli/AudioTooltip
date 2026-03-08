@@ -445,14 +445,17 @@ class AudioTooltipApp(QWidget):
         self.file_detected_signal.connect(self.analyze_file)
         self.show_drop_window_signal.connect(self.show_drop_window_slot)
 
+        # Initialize detection state before setup_hotkeys so on_hotkey()
+        # never races against an uninitialized lock or flag.
+        self.detection_active = False
+        self._detection_lock = threading.Lock()
+
         # Setup system tray
         self.setup_tray()
         self.setup_hotkeys()
 
         # Start tracking thread if available
         self.running = True
-        self.detection_active = False
-        self._detection_lock = threading.Lock()
         if WINDOWS_API_AVAILABLE or KEYBOARD_AVAILABLE:
             self.tracking_thread = threading.Thread(target=self.track_input)
             self.tracking_thread.daemon = True
@@ -1623,9 +1626,14 @@ class AudioTooltipApp(QWidget):
             if self.detection_active:
                 return
             self.detection_active = True
-        detection_thread = threading.Thread(target=self.detect_audio_file)
-        detection_thread.daemon = True
-        detection_thread.start()
+        try:
+            detection_thread = threading.Thread(target=self.detect_audio_file)
+            detection_thread.daemon = True
+            detection_thread.start()
+        except Exception as e:
+            self.module_logger.error(f"Error starting detection thread: {e}")
+            with self._detection_lock:
+                self.detection_active = False
 
     def detect_audio_file(self):
         """Detect selected audio file in Explorer with improved multi-window handling"""
