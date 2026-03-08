@@ -517,7 +517,7 @@ class AudioTooltipApp(QWidget):
                     # keyboard.remove_hotkey('ctrl+shift+a')
                     keyboard.remove_hotkey('alt+q')
                     keyboard.remove_hotkey('ctrl+alt+a')
-                except:
+                except Exception:
                     pass
 
                 # Only add Alt+A for file hover detection
@@ -1014,7 +1014,7 @@ class AudioTooltipApp(QWidget):
                     "Critical Error",
                     f"An unexpected error occurred:\n{str(e)}\n\nSee logs for details."
                 )
-            except:
+            except Exception:
                 pass  # If even showing the error fails, just continue
 
     def process_file_sync(self, file_path, channel=0, force_refresh=False):
@@ -1554,7 +1554,7 @@ class AudioTooltipApp(QWidget):
             try:
                 try:
                     keyboard.remove_hotkey('alt+a')
-                except:
+                except Exception:
                     pass
                 keyboard.add_hotkey('alt+a', on_hotkey, suppress=False)
                 self.module_logger.info("Hotkey registered successfully")
@@ -1740,7 +1740,7 @@ class AudioTooltipApp(QWidget):
                                 if window and window.HWND == hwnd:
                                     shell_windows_by_z.append(window)
                                     break
-                            except:
+                            except Exception:
                                 pass
 
                     # Add any remaining shell windows that we couldn't match
@@ -1749,7 +1749,7 @@ class AudioTooltipApp(QWidget):
                             window = windows.Item(i)
                             if window and window not in shell_windows_by_z:
                                 shell_windows_by_z.append(window)
-                        except:
+                        except Exception:
                             pass
 
                     # Now check each window in Z order (top to bottom)
@@ -1764,7 +1764,7 @@ class AudioTooltipApp(QWidget):
                                 window_title = window.Document.Title
                                 self.module_logger.info(
                                     f"Checking window: Title={window_title}, Path={window_path}")
-                            except:
+                            except Exception:
                                 self.module_logger.debug(
                                     "Could not get window details")
                                 continue
@@ -1845,9 +1845,9 @@ class AudioTooltipApp(QWidget):
                                                 )
                                                 found_file = True
                                                 break
-                                    except:
+                                    except Exception:
                                         pass
-                            except:
+                            except Exception:
                                 pass
 
                     # Last resort - try clipboard
@@ -1900,7 +1900,7 @@ class AudioTooltipApp(QWidget):
             # Clean up COM
             try:
                 pythoncom.CoUninitialize()
-            except:
+            except Exception:
                 pass
 
             self.module_logger.info("Audio file detection completed")

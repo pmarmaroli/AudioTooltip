@@ -226,7 +226,7 @@ def validate_audio_file_path(file_path, logger):
     # Normalize path
     try:
         file_path = os.path.normpath(file_path)
-    except:
+    except Exception:
         return False, "Unable to normalize path"
 
     # Check if file exists

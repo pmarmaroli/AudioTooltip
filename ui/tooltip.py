@@ -265,7 +265,7 @@ class EnhancedTooltip(QWidget):
                     try:
                         audacity_path = subprocess.check_output(
                             ['which', 'audacity']).decode().strip()
-                    except:
+                    except Exception:
                         # Common Linux paths
                         possible_paths = [
                             '/usr/bin/audacity',
