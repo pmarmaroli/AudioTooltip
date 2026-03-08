@@ -361,7 +361,7 @@ def on_visualization_requested(self, viz_type, channel):
         self.audio_analyzer, self.tooltip.current_file, viz_type, channel, preview_duration)
     worker.finished.connect(self.update_visualization)
     worker.error.connect(self.handle_worker_error)
-    worker.finished.connect(self.hideProgressSignal.emit)
+    worker.finished.connect(self._emit_hide_progress)
 
     # Store worker reference
     if not hasattr(self, "viz_workers"):
@@ -471,6 +471,10 @@ class AudioTooltipApp(QWidget):
         self.cleanup_timer.start(60000)  # Run every minute
 
         self.module_logger.info("Application initialized")
+
+    def _emit_hide_progress(self, _result=None):
+        """Relay slot: discards worker result and emits hideProgressSignal."""
+        self.hideProgressSignal.emit()
 
     def refresh_analysis(self, file_path, channel):
         """Force a refresh of the audio analysis"""
@@ -1116,7 +1120,7 @@ class AudioTooltipApp(QWidget):
             self.audio_analyzer, self.tooltip.current_file, viz_type, channel, preview_duration)
         worker.finished.connect(self.update_visualization)
         worker.error.connect(self.handle_worker_error)
-        worker.finished.connect(self.hideProgressSignal.emit)
+        worker.finished.connect(self._emit_hide_progress)
 
         # Store worker reference
         if not hasattr(self, "viz_workers"):
@@ -1243,7 +1247,7 @@ class AudioTooltipApp(QWidget):
             self.audio_analyzer, file_path, channel, language, transcription_channel)
         worker.finished.connect(self.update_transcription)
         worker.error.connect(self.handle_worker_error)
-        worker.finished.connect(self.hideProgressSignal.emit)
+        worker.finished.connect(self._emit_hide_progress)
         worker.file_saved.connect(
             self.show_file_saved_notification)
         worker.file_saved.connect(self.set_transcript_file_path)
