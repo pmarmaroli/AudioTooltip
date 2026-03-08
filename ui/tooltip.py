@@ -10,7 +10,7 @@ from PyQt5.QtGui import QPixmap, QFont, QIcon, QPainter, QColor, QPen, QCursor
 from PyQt5.QtCore import Qt, QTimer, QSize, QPoint, QRect, QPropertyAnimation, QEasingCurve, QSettings
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget,
-    QScrollArea, QFrame, QSizePolicy, QSpacerItem, QToolButton, QMenu, QGroupBox, QDialog, QMessageBox, QComboBox, QCheckBox
+    QScrollArea, QFrame, QSizePolicy, QSpacerItem, QToolButton, QMenu, QGroupBox, QDialog, QMessageBox, QComboBox, QCheckBox, QApplication
 )
 
 
@@ -322,10 +322,10 @@ class EnhancedTooltip(QWidget):
         # Calculate size - at least 3x larger than original display
         orig_width = self.viz_display.pixmap().width()
         orig_height = self.viz_display.pixmap().height()
-        # At least 3x wider, minimum 1200px
-        expanded_width = max(orig_width * 3, 1200)
-        # At least 3x taller, minimum 900px
-        expanded_height = max(orig_height * 3, 900)
+        # Scale to fit within 85% of available screen, respecting resolution
+        screen = QApplication.primaryScreen().availableGeometry()
+        expanded_width = min(max(orig_width * 3, 800), int(screen.width() * 0.85))
+        expanded_height = min(max(orig_height * 3, 600), int(screen.height() * 0.85))
 
         popup.setMinimumSize(expanded_width, expanded_height)
 
