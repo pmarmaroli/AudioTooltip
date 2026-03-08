@@ -1019,6 +1019,7 @@ class AudioTooltipApp(QWidget):
         self.module_logger.info(
             f"Analysis complete for: {file_path}, channel {channel}")
         self.hideProgressSignal.emit()
+        self.tooltip.hide_loading()
 
         if result:
             # Add to recent files
@@ -1053,8 +1054,7 @@ class AudioTooltipApp(QWidget):
     def on_channel_changed(self, channel):
         """Handle channel selection change in tooltip"""
         self.module_logger.info(f"Channel changed to {channel+1}")
-
-        # Re-analyze the file with new channel
+        self.tooltip.show_loading()
         if self.tooltip.current_file:
             self.analyze_file(self.tooltip.current_file, channel)
 
