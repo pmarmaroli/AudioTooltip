@@ -1208,6 +1208,23 @@ class EnhancedTooltip(QWidget):
         # Update transcript
         # Enable the transcript tab (index 2) — avoid out-of-range index
         self.tab_widget.setTabEnabled(2, True)  # Enable transcript tab
+        if transcription:
+            self.transcript_text.setText(transcription)
+        else:
+            transcription_enabled = (
+                self.settings.value("enable_transcription", "false") == "true"
+                if self.settings else False
+            )
+            if transcription_enabled:
+                self.transcript_text.setText(
+                    "No speech detected in this audio segment.\n\n"
+                    "Tip: Try increasing the preview duration in Settings → Analysis."
+                )
+            else:
+                self.transcript_text.setText(
+                    "Transcription is disabled.\n\n"
+                    "To enable: open Settings → Transcription and provide your Azure Speech credentials."
+                )
 
         # Update preview info with settings
         if self.settings:
