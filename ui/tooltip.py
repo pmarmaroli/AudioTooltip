@@ -204,6 +204,7 @@ class EnhancedTooltip(QWidget):
         self.play_button.setIcon(QIcon.fromTheme(
             "media-playback-start", QIcon.fromTheme("play")))
         self.play_button.clicked.connect(self._play_preview)
+        self.play_button.setToolTip("Play a short audio preview of the file")
 
         # Add Refresh button
         refresh_button = QPushButton("Refresh Analysis")
@@ -217,12 +218,14 @@ class EnhancedTooltip(QWidget):
         audacity_button.setIcon(QIcon.fromTheme(
             "audio-x-generic", QIcon.fromTheme("folder-open")))
         audacity_button.clicked.connect(self._open_in_audacity)
+        audacity_button.setToolTip("Open the audio file in Audacity (or system default player if not installed)")
 
         # Save all button
         save_button = QPushButton("Save All")
         save_button.setIcon(QIcon.fromTheme(
             "document-save", QIcon.fromTheme("save")))
         save_button.clicked.connect(self._save_all)
+        save_button.setToolTip("Save analysis results to files (metadata, waveform, visualization, transcript)")
 
         action_layout.addWidget(self.play_button)
         action_layout.addWidget(refresh_button)
