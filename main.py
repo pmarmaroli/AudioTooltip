@@ -347,11 +347,8 @@ def on_visualization_requested(self, viz_type, channel):
         return
 
     # Get preview duration
-    use_whole_signal = self.settings.value(
-        "use_whole_signal", "false") == "true"
-    preview_duration = - \
-        1 if use_whole_signal else int(
-            self.settings.value("preview_duration", "60"))
+    use_whole_signal = self._setting_bool("use_whole_signal", False)
+    preview_duration = -1 if use_whole_signal else self._setting_int("preview_duration", 60)
 
     # Show progress dialog
     self.showProgressSignal.emit(f"Generating {viz_type}...")
@@ -414,7 +411,7 @@ class AudioTooltipApp(QWidget):
         self.load_default_settings()
 
         # Setup logging based on user preference (disabled by default)
-        logging_enabled = self.settings.value("enable_logging", "false") == "true"
+        logging_enabled = self._setting_bool("enable_logging", False)
         self.logger = setup_logging(enabled=logging_enabled)
         
         self.module_logger = get_module_logger("AudioTooltipApp")
@@ -890,7 +887,7 @@ class AudioTooltipApp(QWidget):
             self.audio_analyzer.settings = self.settings
 
             # Reinitialize components if needed
-            if self.settings.value("enable_transcription", "false") == "true":
+            if self._setting_bool("enable_transcription", False):
                 self.audio_analyzer.initialize_speech_services()
 
     def close_app(self):
