@@ -488,7 +488,7 @@ class AudioAnalyzer:
                         y, sr = librosa.load(
                             audio_path, sr=None, mono=False, duration=0.1)
                         num_channels = y.shape[0] if len(y.shape) > 1 else 1
-                    except:
+                    except Exception:
                         num_channels = 1
 
                     if target_sr is None:
