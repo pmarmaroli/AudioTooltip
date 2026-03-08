@@ -50,6 +50,7 @@ class EnhancedTooltip(QWidget):
         self._countdown_tick.setInterval(1000)
         self._countdown_tick.timeout.connect(self._update_countdown)
         self._remaining_seconds = 0
+        self._has_transcription = False
         self.pinned = False
         self.current_file = None
         self.animation = None
@@ -194,6 +195,8 @@ class EnhancedTooltip(QWidget):
         # Stop any running timers
         if self.auto_hide_timer.isActive():
             self.auto_hide_timer.stop()
+        self._countdown_tick.stop()
+        self._countdown_label.setText("")
 
         # Reset pin state
         self.pin_button.setChecked(False)
@@ -389,7 +392,7 @@ class EnhancedTooltip(QWidget):
         planned_paths = []
         if self.metadata_label.text() and self.metadata_label.text() != "No metadata available":
             planned_paths.append(os.path.join(directory, f"{base_name}{channel_suffix}_metadata.txt"))
-        if self.transcript_text.text() and self.transcript_text.text() != "No transcription available":
+        if self._has_transcription and self.transcript_text.text():
             planned_paths.append(os.path.join(directory, f"{base_name}_transcript.txt"))
         if self.waveform_label.pixmap() and not self.waveform_label.pixmap().isNull():
             planned_paths.append(os.path.join(directory, f"{base_name}{channel_suffix}_waveform.png"))
@@ -429,7 +432,7 @@ class EnhancedTooltip(QWidget):
                 self.logger.error(f"Error saving metadata: {e}")
 
         # Save transcript
-        if self.transcript_text.text() and self.transcript_text.text() != "No transcription available":
+        if self._has_transcription and self.transcript_text.text():
             transcript_path = os.path.join(
                 directory, f"{base_name}_transcript.txt")
             try:
@@ -661,9 +664,6 @@ class EnhancedTooltip(QWidget):
         self.metadata_label.setStyleSheet("color: #333; font-size: 10pt;")
         self.metadata_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
 
-        # Force a reasonable minimum height for the metadata section
-        # Ensure it has space for all metadata
-        self.metadata_label.setMinimumHeight(200)
 
         info_layout.addWidget(self.file_name_label)
         metadata_scroll = QScrollArea()
@@ -1218,7 +1218,9 @@ class EnhancedTooltip(QWidget):
         self.tab_widget.setTabEnabled(2, True)  # Enable transcript tab
         if transcription:
             self.transcript_text.setText(transcription)
+            self._has_transcription = True
         else:
+            self._has_transcription = False
             transcription_enabled = (
                 self.settings.value("enable_transcription", "false") == "true"
                 if self.settings else False
