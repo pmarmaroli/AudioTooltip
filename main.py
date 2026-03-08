@@ -610,6 +610,17 @@ class AudioTooltipApp(QWidget):
         except Exception as e:
             self.module_logger.warning(f"Could not set startup: {e}")
 
+    def _setting_bool(self, key: str, default: bool = False) -> bool:
+        """Read a boolean setting stored as 'true'/'false' string."""
+        return self.settings.value(key, "true" if default else "false") == "true"
+
+    def _setting_int(self, key: str, default: int = 0) -> int:
+        """Read an integer setting stored as a string."""
+        try:
+            return int(self.settings.value(key, str(default)))
+        except (ValueError, TypeError):
+            return default
+
     # Add this to setup_tray method in AudioTooltipApp class
 
     def setup_tray(self):
@@ -1106,11 +1117,8 @@ class AudioTooltipApp(QWidget):
             return
 
         # Get preview duration
-        use_whole_signal = self.settings.value(
-            "use_whole_signal", "false") == "true"
-        preview_duration = - \
-            1 if use_whole_signal else int(
-                self.settings.value("preview_duration", "10"))
+        use_whole_signal = self._setting_bool("use_whole_signal", False)
+        preview_duration = -1 if use_whole_signal else self._setting_int("preview_duration", 10)
 
         # Show progress dialog
         self.showProgressSignal.emit(f"Generating {viz_type}...")
