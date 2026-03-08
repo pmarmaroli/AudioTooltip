@@ -1145,7 +1145,7 @@ class EnhancedTooltip(QWidget):
             return path
         head, tail = os.path.split(path)
         prefix = ".../"
-        allowed = max_len - len(tail) - len(prefix)
+        allowed = max_len - len(tail) - len(prefix) - 1  # -1 for the "/" separator
         if allowed < 4:
             return prefix + tail
         return prefix + head[-allowed:] + "/" + tail
