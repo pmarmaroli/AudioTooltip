@@ -38,6 +38,7 @@ from PyQt5.QtCore import (Qt, QSettings, QTimer, QThread, pyqtSignal, QMetaObjec
 from PyQt5.QtWidgets import (QApplication, QWidget, QSystemTrayIcon, QMenu, QAction,
                              QMessageBox, QFileDialog, QDialog, QVBoxLayout, QLabel, QPushButton, QSplashScreen, QProgressBar)
 import signal
+from functools import partial
 
 signal.signal(signal.SIGINT, signal.SIG_DFL)  # Allows CTRL+C to terminate
 
@@ -360,7 +361,7 @@ def on_visualization_requested(self, viz_type, channel):
         self.audio_analyzer, self.tooltip.current_file, viz_type, channel, preview_duration)
     worker.finished.connect(self.update_visualization)
     worker.error.connect(self.handle_worker_error)
-    worker.finished.connect(lambda: self.hideProgressSignal.emit())
+    worker.finished.connect(self.hideProgressSignal.emit)
 
     # Store worker reference
     if not hasattr(self, "viz_workers"):
@@ -968,12 +969,11 @@ class AudioTooltipApp(QWidget):
                 # Connect worker signals
                 try:
                     worker.finished.connect(
-                        lambda result: self.handle_analysis_result(result, file_path, channel))
-                    worker.progress.connect(
-                        lambda msg: self.showProgressSignal.emit(msg))
+                        partial(self.handle_analysis_result, file_path=file_path, channel=channel))
+                    worker.progress.connect(self.showProgressSignal.emit)
                     worker.error.connect(self.handle_worker_error)
                     worker.finished.connect(
-                        lambda: self.cleanup_worker(worker))  # Clean up when done
+                        partial(self._cleanup_worker_on_finish, worker))  # Clean up when done
                 except Exception as connect_e:
                     self.module_logger.error(
                         f"Error connecting worker signals: {connect_e}")
@@ -1044,6 +1044,10 @@ class AudioTooltipApp(QWidget):
         if hasattr(self, "workers") and worker in self.workers:
             self.workers.remove(worker)
 
+    def _cleanup_worker_on_finish(self, worker, result):
+        """Slot for worker finished signal that delegates to cleanup_worker, ignoring result."""
+        self.cleanup_worker(worker)
+
     def handle_analysis_result(self, result, file_path, channel):
         """Handle successful audio analysis"""
         self.module_logger.info(
@@ -1112,7 +1116,7 @@ class AudioTooltipApp(QWidget):
             self.audio_analyzer, self.tooltip.current_file, viz_type, channel, preview_duration)
         worker.finished.connect(self.update_visualization)
         worker.error.connect(self.handle_worker_error)
-        worker.finished.connect(lambda: self.hideProgressSignal.emit())
+        worker.finished.connect(self.hideProgressSignal.emit)
 
         # Store worker reference
         if not hasattr(self, "viz_workers"):
@@ -1239,7 +1243,7 @@ class AudioTooltipApp(QWidget):
             self.audio_analyzer, file_path, channel, language, transcription_channel)
         worker.finished.connect(self.update_transcription)
         worker.error.connect(self.handle_worker_error)
-        worker.finished.connect(lambda: self.hideProgressSignal.emit())
+        worker.finished.connect(self.hideProgressSignal.emit)
         worker.file_saved.connect(
             self.show_file_saved_notification)
         worker.file_saved.connect(self.set_transcript_file_path)
