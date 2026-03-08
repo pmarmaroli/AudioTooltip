@@ -452,6 +452,7 @@ class AudioTooltipApp(QWidget):
         # Start tracking thread if available
         self.running = True
         self.detection_active = False
+        self._detection_lock = threading.Lock()
         if WINDOWS_API_AVAILABLE or KEYBOARD_AVAILABLE:
             self.tracking_thread = threading.Thread(target=self.track_input)
             self.tracking_thread.daemon = True
@@ -1519,7 +1520,8 @@ class AudioTooltipApp(QWidget):
             return False
         finally:
             # Reset detection flag
-            self.detection_active = False
+            with self._detection_lock:
+                self.detection_active = False
 
             # Clean up COM
             try:
@@ -1538,15 +1540,18 @@ class AudioTooltipApp(QWidget):
 
         def on_hotkey():
             # Triggered by keyboard hotkey (Alt+A). Use same behavior as right-click gesture.
-            if not self.detection_active:
-                try:
-                    self.detection_active = True
-                    detection_thread = threading.Thread(target=self.check_file_under_cursor)
-                    detection_thread.daemon = True
-                    detection_thread.start()
-                except Exception as e:
-                    self.module_logger.error(f"Error in hotkey handler: {e}")
-                    self.module_logger.error(traceback.format_exc())
+            with self._detection_lock:
+                if self.detection_active:
+                    return
+                self.detection_active = True
+            try:
+                detection_thread = threading.Thread(target=self.check_file_under_cursor)
+                detection_thread.daemon = True
+                detection_thread.start()
+            except Exception as e:
+                self.module_logger.error(f"Error in hotkey handler: {e}")
+                self.module_logger.error(traceback.format_exc())
+                with self._detection_lock:
                     self.detection_active = False
 
         # Try to register the keyboard hotkey if available
@@ -1580,14 +1585,19 @@ class AudioTooltipApp(QWidget):
                         # Detect edge from up -> down to debounce (one trigger per physical click)
                         if mouse_down and not middle_button_prev:
                             self.module_logger.debug("Middle click detected")
-                            if not self.detection_active:
-                                try:
-                                    self.detection_active = True
-                                    detection_thread = threading.Thread(target=self.check_file_under_cursor)
-                                    detection_thread.daemon = True
-                                    detection_thread.start()
-                                except Exception as e:
-                                    self.module_logger.error(f"Error starting detection thread: {e}")
+                            with self._detection_lock:
+                                if self.detection_active:
+                                    middle_button_prev = mouse_down
+                                    continue
+                                self.detection_active = True
+                            try:
+                                detection_thread = threading.Thread(target=self.check_file_under_cursor)
+                                detection_thread.daemon = True
+                                detection_thread.start()
+                            except Exception as e:
+                                self.module_logger.error(f"Error starting detection thread: {e}")
+                                with self._detection_lock:
+                                    self.detection_active = False
                         middle_button_prev = mouse_down
                     except Exception as mouse_e:
                         self.module_logger.debug(f"Mouse polling error: {mouse_e}")
@@ -1609,7 +1619,10 @@ class AudioTooltipApp(QWidget):
     def trigger_detection(self):
         self.module_logger.info(
             "Two-finger tap detected, initiating detection")
-        self.detection_active = True
+        with self._detection_lock:
+            if self.detection_active:
+                return
+            self.detection_active = True
         detection_thread = threading.Thread(target=self.detect_audio_file)
         detection_thread.daemon = True
         detection_thread.start()
@@ -1619,7 +1632,8 @@ class AudioTooltipApp(QWidget):
         if not WINDOWS_API_AVAILABLE:
             self.module_logger.error(
                 "Cannot detect files: Windows API unavailable")
-            self.detection_active = False
+            with self._detection_lock:
+                self.detection_active = False
             return
 
         self.module_logger.info("Starting audio file detection")
@@ -1895,7 +1909,8 @@ class AudioTooltipApp(QWidget):
 
         finally:
             # Reset detection flag
-            self.detection_active = False
+            with self._detection_lock:
+                self.detection_active = False
 
             # Clean up COM
             try:
