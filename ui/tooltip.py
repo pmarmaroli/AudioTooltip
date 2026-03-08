@@ -826,11 +826,11 @@ class EnhancedTooltip(QWidget):
         # Get selected language
         language = self.language_combo.currentData()
 
-        # Get selected channel
+        # Get selected channel (guard against empty combo box returning None)
         selected_channel = self.transcription_channel_combo.currentData()
-
-        # If "Current Channel" is selected, use the current channel
-        if selected_channel == -2:
+        if selected_channel is None:
+            selected_channel = self.current_channel
+        elif selected_channel == -2:
             selected_channel = self.current_channel
 
         # Notify the main application to run transcription
