@@ -240,7 +240,7 @@ class SettingsDialog(QDialog):
 
         self.transcription_duration_combo = QComboBox()
         self.transcription_duration_combo.addItem(
-            "Same as preview duration", "preview")
+            "Same as preview duration (set in Analysis tab)", "preview")
         self.transcription_duration_combo.addItem("Maximum (60 seconds)", "60")
         self.transcription_duration_combo.addItem(
             "Entire file (may be slow for large files)", "full")
