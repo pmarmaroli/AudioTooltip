@@ -46,6 +46,10 @@ class EnhancedTooltip(QWidget):
         self.auto_hide_timer = QTimer(self)
         self.auto_hide_timer.timeout.connect(self.hide_with_fade)
         self.auto_hide_seconds = 10
+        self._countdown_tick = QTimer(self)
+        self._countdown_tick.setInterval(1000)
+        self._countdown_tick.timeout.connect(self._update_countdown)
+        self._remaining_seconds = 0
         self.pinned = False
         self.current_file = None
         self.animation = None
@@ -175,6 +179,10 @@ class EnhancedTooltip(QWidget):
         title_layout.addWidget(self.pin_button)
         title_layout.addWidget(settings_button)
         title_layout.addWidget(close_button)
+        self._countdown_label = QLabel("")
+        self._countdown_label.setStyleSheet("color: #999; font-size: 9px; min-width: 28px;")
+        self._countdown_label.setToolTip("Tooltip will auto-hide. Click the pin button to keep it open.")
+        title_layout.addWidget(self._countdown_label)
 
         # We need to store the drag position for mouseMoveEvent
         self.drag_position = None
@@ -1252,12 +1260,23 @@ class EnhancedTooltip(QWidget):
         """Hide loading overlay when analysis result arrives."""
         self._loading_label.hide()
 
+    def _update_countdown(self):
+        """Tick down the auto-hide countdown label."""
+        if self._remaining_seconds > 0:
+            self._countdown_label.setText(f"⏱{self._remaining_seconds}s")
+            self._remaining_seconds -= 1
+        else:
+            self._countdown_label.setText("")
+            self._countdown_tick.stop()
+
     def _toggle_pin(self, checked):
         """Toggle pinned state"""
         self.pinned = checked
         if checked:
             if self.auto_hide_timer.isActive():
                 self.auto_hide_timer.stop()
+            self._countdown_tick.stop()
+            self._countdown_label.setText("")
         else:
             self.reset_auto_hide_timer()
 
@@ -1268,7 +1287,10 @@ class EnhancedTooltip(QWidget):
 
         if self.auto_hide_timer.isActive():
             self.auto_hide_timer.stop()
-
+        self._countdown_tick.stop()
+        self._remaining_seconds = self.auto_hide_seconds
+        self._update_countdown()
+        self._countdown_tick.start()
         self.auto_hide_timer.start(self.auto_hide_seconds * 1000)
 
     def show_with_fade(self):
@@ -1299,6 +1321,8 @@ class EnhancedTooltip(QWidget):
 
         if self.auto_hide_timer.isActive():
             self.auto_hide_timer.stop()
+        self._countdown_tick.stop()
+        self._countdown_label.setText("")
 
         # Create fade-out animation
         self.animation = QPropertyAnimation(self, b"windowOpacity")
