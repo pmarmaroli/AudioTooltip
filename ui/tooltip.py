@@ -1107,6 +1107,18 @@ class EnhancedTooltip(QWidget):
         # Ensure it's visible
         self.delay_label.setVisible(True)
 
+    @staticmethod
+    def _elide_path(path: str, max_len: int = 80) -> str:
+        """Shorten a path for display, keeping the filename visible."""
+        if len(path) <= max_len:
+            return path
+        head, tail = os.path.split(path)
+        prefix = ".../"
+        allowed = max_len - len(tail) - len(prefix)
+        if allowed < 4:
+            return prefix + tail
+        return prefix + head[-allowed:] + "/" + tail
+
     def update_content(self, file_path, metadata, viz_buffer, transcription, num_channels=1, current_channel=0, delay_ms=None):
         """Update the tooltip content with analysis results."""
         self.current_file = file_path
@@ -1121,7 +1133,8 @@ class EnhancedTooltip(QWidget):
         # Update title and file name
         file_name = os.path.basename(file_path)
         self.title_label.setText(f"Audio Analysis: {file_name}")
-        self.file_name_label.setText(f"File: {file_path}")
+        self.file_name_label.setText(f"File: {self._elide_path(file_path)}")
+        self.file_name_label.setToolTip(file_path)  # Full path on hover
 
         # Update metadata
         if metadata:
