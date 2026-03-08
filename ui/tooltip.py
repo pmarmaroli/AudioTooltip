@@ -365,6 +365,34 @@ class EnhancedTooltip(QWidget):
         base_name = os.path.splitext(os.path.basename(self.current_file))[0]
         channel_suffix = f"_ch{self.current_channel+1}" if self.num_channels > 1 else ""
 
+        # Build list of planned output paths to check for overwrites
+        planned_paths = []
+        if self.metadata_label.text() and self.metadata_label.text() != "No metadata available":
+            planned_paths.append(os.path.join(directory, f"{base_name}{channel_suffix}_metadata.txt"))
+        if self.transcript_text.text() and self.transcript_text.text() != "No transcription available":
+            planned_paths.append(os.path.join(directory, f"{base_name}_transcript.txt"))
+        if self.waveform_label.pixmap() and not self.waveform_label.pixmap().isNull():
+            planned_paths.append(os.path.join(directory, f"{base_name}{channel_suffix}_waveform.png"))
+        if (self.viz_display.pixmap() and not self.viz_display.pixmap().isNull() and
+                hasattr(self, '_viz_generated') and self._viz_generated):
+            viz_type = self.viz_combo_menu.text().lower().replace('-', '_')
+            planned_paths.append(os.path.join(directory, f"{base_name}{channel_suffix}_{viz_type}.png"))
+
+        if not planned_paths:
+            QMessageBox.warning(self, "Nothing to Save", "No content available to save.")
+            return
+
+        existing_paths = [p for p in planned_paths if os.path.exists(p)]
+        if existing_paths:
+            names = "\n".join(os.path.basename(p) for p in existing_paths)
+            reply = QMessageBox.question(
+                self, "Overwrite Files?",
+                f"The following files already exist and will be overwritten:\n\n{names}\n\nContinue?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
         # List of items to save
         items_saved = []
 
