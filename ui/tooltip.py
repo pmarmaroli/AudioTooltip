@@ -97,6 +97,13 @@ class EnhancedTooltip(QWidget):
 
         main_layout.addWidget(self.tab_widget)
 
+        # Loading overlay shown during re-analysis
+        self._loading_label = QLabel("⏳ Loading...", self)
+        self._loading_label.setAlignment(Qt.AlignCenter)
+        self._loading_label.setStyleSheet(
+            "background: rgba(255,255,255,200); color: #333; font-size: 14px; font-weight: bold; border-radius: 6px;")
+        self._loading_label.hide()
+
         # Action buttons
         action_layout = self._create_action_buttons()
         main_layout.addLayout(action_layout)
@@ -1208,6 +1215,18 @@ class EnhancedTooltip(QWidget):
         self.viz_preview_info.setText(preview_info)
 
         self.update_channel_delay(delay_ms)
+
+    def show_loading(self):
+        """Show loading overlay while re-analysis runs."""
+        if hasattr(self, 'tab_widget'):
+            geo = self.tab_widget.geometry()
+            self._loading_label.setGeometry(geo)
+            self._loading_label.raise_()
+            self._loading_label.show()
+
+    def hide_loading(self):
+        """Hide loading overlay when analysis result arrives."""
+        self._loading_label.hide()
 
     def _toggle_pin(self, checked):
         """Toggle pinned state"""
