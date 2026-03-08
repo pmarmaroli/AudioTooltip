@@ -1020,7 +1020,7 @@ class AudioTooltipApp(QWidget):
                 QMessageBox.critical(
                     None,
                     "Critical Error",
-                    f"An unexpected error occurred:\n{str(e)}\n\nSee logs for details."
+                    "An unexpected error occurred. See application logs for details."
                 )
             except Exception:
                 pass  # If even showing the error fails, just continue
