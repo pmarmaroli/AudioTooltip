@@ -658,7 +658,12 @@ class EnhancedTooltip(QWidget):
         self.metadata_label.setMinimumHeight(200)
 
         info_layout.addWidget(self.file_name_label)
-        info_layout.addWidget(self.metadata_label)
+        metadata_scroll = QScrollArea()
+        metadata_scroll.setWidgetResizable(True)
+        metadata_scroll.setMaximumHeight(150)
+        metadata_scroll.setWidget(self.metadata_label)
+        metadata_scroll.setFrameShape(QFrame.NoFrame)
+        info_layout.addWidget(metadata_scroll)
 
         # Waveform container - remove padding
         waveform_container = QFrame()
