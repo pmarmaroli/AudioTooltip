@@ -288,11 +288,19 @@ class AudioTooltipWorker(QThread):
         self.channel = channel
         self.force_refresh = force_refresh
         self.logger = get_module_logger("AudioTooltipWorker")
+        self._cancelled = False
+
+    def cancel(self):
+        """Signal the worker to stop at the next checkpoint."""
+        self._cancelled = True
 
     def run(self):
         """Process audio file"""
         self.logger.info(
             f"Starting worker for {self.file_path}, channel {self.channel}, force_refresh: {self.force_refresh}")
+
+        if self._cancelled:
+            return
 
         try:
             # Ensure analyzer is initialized
@@ -300,11 +308,17 @@ class AudioTooltipWorker(QThread):
                 self.progress.emit("Initializing analyzer...")
                 self.analyzer.initialize()
 
+            if self._cancelled:
+                return
+
             # Process file
             self.progress.emit(
                 f"Loading audio data (channel {self.channel+1})...")
             result = self.analyzer.process_audio_file(
                 self.file_path, self.channel, force_refresh=self.force_refresh)
+
+            if self._cancelled:
+                return
 
             if result:
                 self.logger.info(
@@ -866,13 +880,22 @@ class AudioTooltipApp(QWidget):
         """Show progress dialog in main thread"""
         if not hasattr(self, 'progress_dialog') or self.progress_dialog is None:
             self.progress_dialog = ProgressDialog(
-                None, "Analyzing Audio", message)
+                None, "Analyzing Audio", message, cancelable=True)
             self.progress_dialog.setWindowModality(Qt.NonModal)
+            if hasattr(self, 'workers') and self.workers:
+                current_worker = self.workers[-1]
+                self.progress_dialog.rejected.connect(
+                    partial(self._cancel_current_worker, current_worker))
         else:
             self.progress_dialog.update_message(message)
 
         self.progress_dialog.show()
         self.progress_dialog.raise_()
+
+    def _cancel_current_worker(self, worker):
+        """Cancel the given worker when progress dialog is rejected."""
+        if hasattr(worker, 'cancel'):
+            worker.cancel()
 
     def hide_progress_dialog(self):
         """Hide progress dialog"""
