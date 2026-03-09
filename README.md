@@ -15,7 +15,7 @@ The app runs quietly in your system tray (the small icons area near your clock) 
 There are several ways to analyze audio files:
 
 1. **Keyboard shortcut**: Select a file in Windows Explorer and press Alt+A
-2. **Middle-click detection**: Hold middle-click on any audio file in Windows Explorer  
+2. **Middle-click detection**: Middle-click any audio file in Windows Explorer
 3. **System tray**: Right-click the app's icon for menu, middle-click for quick file dialog
 4. **Drop target window**: Press Alt+D to open a drop target window and drag-and-drop audio files onto it
 
@@ -60,10 +60,10 @@ We hope this tool can be helpful for:
 ## Project Structure
 
 ```
-audio-analyzer/
+AudioTooltip/
 │
 ├── core/                      # Core analysis functionality
-│   ├── audio_analyzer.py      # Audio loading, analysis, and feature extraction
+│   ├── audio_analyzer.py      # Audio loading, analysis, feature extraction, transcription
 │   └── audio_playback.py      # Audio playback functionality
 │
 ├── ui/                        # User interface components
@@ -72,15 +72,20 @@ audio-analyzer/
 │   └── progress_dialog.py     # Progress indicators
 │
 ├── utils/                     # Utility functions
-│   ├── file_utils.py          # File handling utilities
-│   └── logging_utils.py       # Logging configuration
+│   ├── file_utils.py          # File handling and audio extension detection
+│   ├── logging_utils.py       # Logging configuration
+│   └── startup_utils.py       # Windows startup management
 │
 ├── resources/                 # Application resources
 │   └── icons/                 # Application icons
 │
 ├── main.py                    # Application entry point
+├── build_release.bat          # Release build script
+├── cleanup.ps1                # Uninstall/cleanup script
+├── AudioTooltip.spec          # PyInstaller spec file
 ├── README.md                  # Project documentation
-└── requirements.txt           # Dependencies
+├── installation-guide.md      # Post-install user guide
+└── requirements.txt           # Python dependencies
 ```
 
 ## System Requirements
@@ -123,17 +128,9 @@ The pre-built executable includes all necessary dependencies. No additional soft
 #### Requirements
 
 - Python 3.11+
-- PyQt5
-- librosa
-- numpy
-- matplotlib
-- soundfile
-- mutagen
-- Azure Speech SDK (for transcription)
-- Windows-specific (optional):
-  - pywin32
-  - keyboard
-  - pynput
+- See `requirements.txt` for the full pinned dependency list
+
+Key packages: `PyQt5`, `librosa`, `numpy`, `matplotlib`, `soundfile`, `mutagen`, `azure-cognitiveservices-speech`, `pywin32`, `keyboard`, `pynput`
 
 #### Setup
 
@@ -175,7 +172,6 @@ The build script will create `dist/AudioTooltip.exe` plus additional user files 
 The modular architecture makes it easy to extend:
 
 - Add new visualization types in `core/audio_analyzer.py`
-- Implement additional features in `core/audio_features.py`
 - Enhance the UI by modifying components in the `ui/` directory
 
 ### Building a Standalone Application
@@ -191,18 +187,23 @@ pip install pyinstaller
 
 Logs are stored in:
 
-- Windows: `%LOCALAPPDATA%\AudioTooltip_Logs\`
-- Linux/Mac: `~/.local/share/AudioTooltip_Logs/`
+- `%LOCALAPPDATA%\AudioTooltip_Logs\`
+
+Logging is disabled by default. Enable it in Settings > General > "Enable application logging".
 
 Common issues:
 
 - **Missing dependencies**: Ensure all packages in requirements.txt are installed
 - **Hotkeys not working**: Make sure the virtual environment is activated when running from source
-- **Audio file not recognized**: Check if the file format is supported
+- **Audio file not recognized**: Check if the file format is supported. Supported extensions: `.mp3`, `.wav`, `.flac`, `.m4a`, `.ogg`, `.wma`, `.aac`, `.aiff`, `.mp4`, `.ape`, `.opus`, `.wv`
 - **Network files not accessible**: UNC network paths may have issues; try copying files locally first
 - **Transcription unavailable**: Verify Azure credentials in settings
 - **Incomplete transcription**: Ensure "Full file" is selected in transcription duration settings
 - **Windows security warning**: Follow the steps outlined in the security warning section
+
+## Additional Documentation
+
+- [Installation Guide](installation-guide.md) — Windows SmartScreen warning, detailed feature walkthrough, configuration reference, startup behavior, and uninstall instructions
 
 ## Need Help?
 
