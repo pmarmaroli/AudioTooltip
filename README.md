@@ -153,17 +153,71 @@ pip install -r requirements.txt
 python main.py
 ```
 
-4. Or build your own executable:
+4. Or build your own executable — see [Creating a Release](#creating-a-release) below.
 
-```bash
-# Recommended: Use the build script (includes cleanup.ps1 and installation-guide.md)
-.\build_release.bat
+## Creating a Release
 
-# Alternative: Manual build using PyInstaller
-pyinstaller .\AudioTooltip.spec --clean
+Follow this checklist in order each time you cut a new release.
+
+### 1. Bump the version string
+
+Open `main.py` and find the splash screen painter line (around line 2015):
+
+```python
+painter.drawText(20, 80, "v3.0.0 - Audio Analysis Tool")
 ```
 
-The build script will create `dist/AudioTooltip.exe` plus additional user files (`cleanup.ps1`, `installation-guide.md`).
+Change `v3.0.0` to the new version number. Save the file.
+
+### 2. Build the executable
+
+Double-click `build_release.bat`, or run it from any terminal — the script always `cd`s to its own directory first, so the working directory does not matter.
+
+The script will:
+- Verify Python 3.11 is installed (attempts `winget` install if not found)
+- Create `.venv` in the project root if it does not exist
+- Install all `requirements.txt` dependencies into the venv
+- Install PyInstaller into the venv if not present
+- Run `python -m PyInstaller AudioTooltip.spec --clean`
+- Copy `cleanup.ps1` and `installation-guide.md` into `dist/`
+
+Output: `dist/AudioTooltip.exe` (plus `cleanup.ps1` and `installation-guide.md` in the same folder).
+
+> **Note:** Do not run `pip install pyinstaller` manually beforehand — the script handles this inside the venv.
+
+### 3. Verify the build
+
+- Confirm `dist/AudioTooltip.exe` exists.
+- Launch `dist/AudioTooltip.exe` and check that the splash screen shows the correct version number.
+- Confirm `dist/cleanup.ps1` and `dist/installation-guide.md` are present.
+
+### 4. Package and publish
+
+1. Zip the contents of `dist/` (not the folder itself — users should be able to unzip and run directly):
+
+   ```
+   AudioTooltip.exe
+   cleanup.ps1
+   installation-guide.md
+   ```
+
+2. Commit the version bump:
+
+   ```bash
+   git add main.py
+   git commit -m "chore: bump version to vX.Y.Z"
+   ```
+
+3. Tag the release and push:
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin main --tags
+   ```
+
+4. Create a GitHub release at [https://github.com/pmarmaroli/AudioTooltip/releases/new](https://github.com/pmarmaroli/AudioTooltip/releases/new), select the tag, and upload the zip file.
+
+---
 
 ## Development
 
@@ -173,15 +227,6 @@ The modular architecture makes it easy to extend:
 
 - Add new visualization types in `core/audio_analyzer.py`
 - Enhance the UI by modifying components in the `ui/` directory
-
-### Building a Standalone Application
-
-You can package the application using the build script:
-
-```bash
-pip install pyinstaller
-.\build_release.bat
-```
 
 ## Troubleshooting
 
