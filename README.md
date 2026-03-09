@@ -159,6 +159,18 @@ python main.py
 
 Follow this checklist in order each time you cut a new release.
 
+### Versioning scheme
+
+This project uses **Semantic Versioning** (`MAJOR.MINOR.PATCH`):
+
+| Bump | When to use | Example |
+|------|-------------|---------|
+| PATCH | Bug fixes only, no new features | 3.0.0 → 3.0.1 |
+| MINOR | New features, fully backwards compatible | 3.0.0 → 3.1.0 |
+| MAJOR | Breaking changes or significant rewrites | 3.0.0 → 4.0.0 |
+
+**Decide the new version number before starting the steps below.** The version drives the git tag, the splash screen string, and the release notes — everything must be consistent.
+
 ### 1. Bump the version string
 
 Open `main.py` and find the splash screen painter line (around line 2015):
