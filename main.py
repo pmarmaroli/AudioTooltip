@@ -22,6 +22,13 @@ import threading
 import gc
 import traceback
 import argparse
+
+# Close PyInstaller native splash screen as early as possible
+try:
+    import pyi_splash
+    pyi_splash.update_text("Loading components...")
+except ImportError:
+    pyi_splash = None
 try:
     import keyboard
     KEYBOARD_AVAILABLE = True
@@ -2034,6 +2041,11 @@ if __name__ == '__main__':
     splash.show()
     app.processEvents()
     print("Splash screen shown")
+
+    # Close the PyInstaller native splash now that the Qt splash is visible
+    if pyi_splash is not None:
+        pyi_splash.close()
+        print("PyInstaller native splash closed")
 
     # More execution...
     print("About to call main()")
