@@ -10,27 +10,24 @@ echo ============================================
 echo.
 
 REM ── 0. Ask for version number ────────────────────────────────────────────────
-REM Read current version from main.py for display
-for /f "tokens=*" %%a in ('python -c "import re; content=open('main.py').read(); m=re.search(r'v(\d+\.\d+\.\d+)', content); print(m.group(1) if m else 'unknown')" 2^>nul') do set CURRENT_VERSION=%%a
+REM Read current version from main.py
+for /f "tokens=*" %%a in ('python build_version.py --read 2^>nul') do set CURRENT_VERSION=%%a
 
 echo Current version in code: v%CURRENT_VERSION%
 echo.
 set /p VERSION="Enter new version number (e.g. 3.1.0), or press Enter to keep v%CURRENT_VERSION%: "
 
 REM If user pressed Enter without typing, keep current version
-if "!VERSION!"=="" (
-    set VERSION=%CURRENT_VERSION%
-    echo [OK] Keeping current version: v!VERSION!
-) else (
-    REM Validate format: must match digits.digits.digits
-    python -c "import re,sys; sys.exit(0 if re.match(r'^\d+\.\d+\.\d+$','!VERSION!') else 1)" >nul 2>&1
-    if errorlevel 1 (
-        echo [ERROR] Invalid version format "!VERSION!". Expected format: MAJOR.MINOR.PATCH (e.g. 3.1.0)
-        pause
-        exit /b 1
-    )
-    echo [OK] New version: v!VERSION!
+if "!VERSION!"=="" set VERSION=%CURRENT_VERSION%
+
+echo [INFO] Patching version to v!VERSION! in main.py...
+python build_version.py --patch !VERSION!
+if errorlevel 1 (
+    echo [ERROR] Failed to set version. Use format MAJOR.MINOR.PATCH (e.g. 3.1.0)
+    pause
+    exit /b 1
 )
+echo [OK] Version set to v!VERSION!
 echo.
 
 REM ── 1. Check Python ──────────────────────────────────────────────────────────
@@ -57,17 +54,6 @@ if errorlevel 1 (
 )
 echo [OK] Python found:
 python --version
-echo.
-
-REM ── 2. Patch version string in main.py ───────────────────────────────────────
-echo [INFO] Updating version string in main.py to v!VERSION!...
-python -c "import re,sys; f='main.py'; s=open(f,encoding='utf-8').read(); n=re.sub(r'v\d+\.\d+\.\d+(?= - Audio Analysis Tool)','v!VERSION!',s); open(f,'w',encoding='utf-8').write(n) if n!=s else sys.exit(1)"
-if errorlevel 1 (
-    echo [ERROR] Failed to patch version in main.py. Pattern not found.
-    pause
-    exit /b 1
-)
-echo [OK] main.py updated.
 echo.
 
 REM ── 3. Create virtual environment if needed ──────────────────────────────────
