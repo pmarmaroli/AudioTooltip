@@ -56,9 +56,22 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# Native splash screen shown during extraction (before Python starts)
+splash = Splash(
+    'resources/splash.png',
+    binaries=a.binaries,
+    datas=a.datas,
+    text_pos=(20, 240),
+    text_size=14,
+    text_color='#6496FF',
+    text_default='Starting...',
+)
+
 exe = EXE(
     pyz,
     a.scripts,
+    splash,
+    splash.binaries,
     a.binaries,
     a.zipfiles,
     a.datas,
