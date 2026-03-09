@@ -23,7 +23,7 @@ if "!VERSION!"=="" (
     echo [OK] Keeping current version: v!VERSION!
 ) else (
     REM Validate format: must match digits.digits.digits
-    echo !VERSION! | findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
+    python -c "import re,sys; sys.exit(0 if re.match(r'^\d+\.\d+\.\d+$','!VERSION!') else 1)" >nul 2>&1
     if errorlevel 1 (
         echo [ERROR] Invalid version format "!VERSION!". Expected format: MAJOR.MINOR.PATCH (e.g. 3.1.0)
         pause
