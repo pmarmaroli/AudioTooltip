@@ -23,7 +23,7 @@ if "!VERSION!"=="" set VERSION=%CURRENT_VERSION%
 echo [INFO] Patching version to v!VERSION! in main.py...
 python build_version.py --patch !VERSION!
 if errorlevel 1 (
-    echo [ERROR] Failed to set version. Use format MAJOR.MINOR.PATCH (e.g. 3.1.0)
+    echo [ERROR] Failed to set version. Use format MAJOR.MINOR.PATCH ^(e.g. 3.1.0^)
     pause
     exit /b 1
 )
