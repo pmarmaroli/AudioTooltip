@@ -61,19 +61,9 @@ echo.
 
 REM ── 2. Patch version string in main.py ───────────────────────────────────────
 echo [INFO] Updating version string in main.py to v!VERSION!...
-python -c "
-import re, sys
-path = 'main.py'
-content = open(path, encoding='utf-8').read()
-new_content = re.sub(r'v\d+\.\d+\.\d+(\s*-\s*Audio Analysis Tool)', r'v%VERSION%\1', content)
-if new_content == content:
-    print('WARNING: version pattern not found in main.py — no change made')
-    sys.exit(0)
-open(path, 'w', encoding='utf-8').write(new_content)
-print('OK')
-"
+python -c "import re,sys; f='main.py'; s=open(f,encoding='utf-8').read(); n=re.sub(r'v\d+\.\d+\.\d+(?= - Audio Analysis Tool)','v!VERSION!',s); open(f,'w',encoding='utf-8').write(n) if n!=s else sys.exit(1)"
 if errorlevel 1 (
-    echo [ERROR] Failed to patch version in main.py.
+    echo [ERROR] Failed to patch version in main.py. Pattern not found.
     pause
     exit /b 1
 )
