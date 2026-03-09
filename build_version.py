@@ -42,11 +42,12 @@ def patch_version(new_version):
         return 1
     try:
         content = open(MAIN_PY, encoding="utf-8").read()
-        new_content = VERSION_PATTERN.sub(f"v{new_version}", content)
-        if new_content == content:
+        if not VERSION_PATTERN.search(content):
             print("ERROR: Version pattern not found in main.py", file=sys.stderr)
             return 1
-        open(MAIN_PY, "w", encoding="utf-8").write(new_content)
+        new_content = VERSION_PATTERN.sub(f"v{new_version}", content)
+        if new_content != content:
+            open(MAIN_PY, "w", encoding="utf-8").write(new_content)
         return 0
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
