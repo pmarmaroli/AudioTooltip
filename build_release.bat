@@ -146,7 +146,7 @@ echo [OK] Additional files copied.
 REM ── Done ─────────────────────────────────────────────────────────────────────
 echo.
 echo ============================================
-echo  Build successful!  v!VERSION!
+echo  Build successful^^!  v!VERSION!
 echo ============================================
 echo.
 echo   dist\AudioTooltip.exe  ^<-- ready
