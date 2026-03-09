@@ -1,6 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
 
+REM Always run from the directory containing this script
+cd /d "%~dp0"
+
 echo ============================================
 echo  AudioTooltip Build Script
 echo ============================================
