@@ -38,7 +38,6 @@ PyQt5==5.15.9
 PyQt5-Qt5==5.15.2
 PyQt5_sip==12.17.0
 python-dateutil==2.9.0.post0
-python-dotenv==1.0.0
 pywin32==306
 pywin32-ctypes==0.2.3
 requests==2.32.3
