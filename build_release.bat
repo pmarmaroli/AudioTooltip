@@ -9,6 +9,30 @@ echo  AudioTooltip Build Script
 echo ============================================
 echo.
 
+REM ── 0. Ask for version number ────────────────────────────────────────────────
+REM Read current version from main.py for display
+for /f "tokens=*" %%a in ('python -c "import re; content=open('main.py').read(); m=re.search(r'v(\d+\.\d+\.\d+)', content); print(m.group(1) if m else 'unknown')" 2^>nul') do set CURRENT_VERSION=%%a
+
+echo Current version in code: v%CURRENT_VERSION%
+echo.
+set /p VERSION="Enter new version number (e.g. 3.1.0), or press Enter to keep v%CURRENT_VERSION%: "
+
+REM If user pressed Enter without typing, keep current version
+if "!VERSION!"=="" (
+    set VERSION=%CURRENT_VERSION%
+    echo [OK] Keeping current version: v!VERSION!
+) else (
+    REM Validate format: must match digits.digits.digits
+    echo !VERSION! | findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
+    if errorlevel 1 (
+        echo [ERROR] Invalid version format "!VERSION!". Expected format: MAJOR.MINOR.PATCH (e.g. 3.1.0)
+        pause
+        exit /b 1
+    )
+    echo [OK] New version: v!VERSION!
+)
+echo.
+
 REM ── 1. Check Python ──────────────────────────────────────────────────────────
 python --version >nul 2>&1
 if errorlevel 1 (
@@ -35,7 +59,28 @@ echo [OK] Python found:
 python --version
 echo.
 
-REM ── 2. Create virtual environment if needed ──────────────────────────────────
+REM ── 2. Patch version string in main.py ───────────────────────────────────────
+echo [INFO] Updating version string in main.py to v!VERSION!...
+python -c "
+import re, sys
+path = 'main.py'
+content = open(path, encoding='utf-8').read()
+new_content = re.sub(r'v\d+\.\d+\.\d+(\s*-\s*Audio Analysis Tool)', r'v%VERSION%\1', content)
+if new_content == content:
+    print('WARNING: version pattern not found in main.py — no change made')
+    sys.exit(0)
+open(path, 'w', encoding='utf-8').write(new_content)
+print('OK')
+"
+if errorlevel 1 (
+    echo [ERROR] Failed to patch version in main.py.
+    pause
+    exit /b 1
+)
+echo [OK] main.py updated.
+echo.
+
+REM ── 3. Create virtual environment if needed ──────────────────────────────────
 set VENV_DIR=.venv
 
 if not exist "%VENV_DIR%\Scripts\activate.bat" (
@@ -52,18 +97,18 @@ if not exist "%VENV_DIR%\Scripts\activate.bat" (
 )
 echo.
 
-REM ── 3. Activate virtual environment ──────────────────────────────────────────
+REM ── 4. Activate virtual environment ──────────────────────────────────────────
 call "%VENV_DIR%\Scripts\activate.bat"
 echo [OK] Virtual environment activated: %VIRTUAL_ENV%
 echo.
 
-REM ── 4. Upgrade pip quietly ───────────────────────────────────────────────────
+REM ── 5. Upgrade pip quietly ───────────────────────────────────────────────────
 echo [INFO] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 echo [OK] pip up to date.
 echo.
 
-REM ── 5. Install project requirements ─────────────────────────────────────────
+REM ── 6. Install project requirements ─────────────────────────────────────────
 echo [INFO] Installing requirements from requirements.txt...
 python -m pip install -r requirements.txt --quiet
 if errorlevel 1 (
@@ -74,7 +119,7 @@ if errorlevel 1 (
 echo [OK] Requirements installed.
 echo.
 
-REM ── 6. Install PyInstaller if not already present ────────────────────────────
+REM ── 7. Install PyInstaller if not already present ────────────────────────────
 python -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 (
     echo [INFO] PyInstaller not found — installing...
@@ -90,14 +135,14 @@ if errorlevel 1 (
 )
 echo.
 
-REM ── 7. Clean previous build artifacts ────────────────────────────────────────
+REM ── 8. Clean previous build artifacts ────────────────────────────────────────
 echo [INFO] Cleaning previous build...
 if exist "dist"  rmdir /s /q "dist"
 if exist "build" rmdir /s /q "build"
 echo [OK] Clean done.
 echo.
 
-REM ── 8. Run PyInstaller ───────────────────────────────────────────────────────
+REM ── 9. Run PyInstaller ───────────────────────────────────────────────────────
 echo [INFO] Building executable...
 echo.
 python -m PyInstaller AudioTooltip.spec --clean
@@ -108,14 +153,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM ── 9. Verify output ─────────────────────────────────────────────────────────
+REM ── 10. Verify output ────────────────────────────────────────────────────────
 if not exist "dist\AudioTooltip.exe" (
     echo [ERROR] Build failed — AudioTooltip.exe not found in dist folder.
     pause
     exit /b 1
 )
 
-REM ── 10. Copy additional release files ────────────────────────────────────────
+REM ── 11. Copy additional release files ────────────────────────────────────────
 echo.
 echo [INFO] Copying release files...
 copy "cleanup.ps1"           "dist\" >nul
@@ -125,14 +170,20 @@ echo [OK] Additional files copied.
 REM ── Done ─────────────────────────────────────────────────────────────────────
 echo.
 echo ============================================
-echo  Build successful!
+echo  Build successful!  v!VERSION!
 echo ============================================
 echo.
-echo   AudioTooltip.exe  ^<-- ready in dist\
-echo   cleanup.ps1
-echo   installation-guide.md
+echo   dist\AudioTooltip.exe  ^<-- ready
+echo   dist\cleanup.ps1
+echo   dist\installation-guide.md
 echo.
 echo Contents of dist folder:
 dir "dist" /b
+echo.
+echo Next steps:
+echo   git add main.py
+echo   git commit -m "chore: bump version to v!VERSION!"
+echo   git tag v!VERSION!
+echo   git push ^&^& git push --tags
 echo.
 pause
