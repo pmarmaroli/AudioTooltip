@@ -8,7 +8,7 @@ import os
 import json
 import logging
 from pathlib import Path
-from typing import List, Set, Dict, Optional, Union, Any
+from typing import List, Set, Optional, Any
 
 # Define logger
 logger = logging.getLogger("FileUtils")
@@ -35,34 +35,6 @@ def is_audio_file(file_path: str) -> bool:
 
     extension = Path(file_path).suffix.lower()
     return extension in AUDIO_EXTENSIONS
-
-
-def get_files_in_directory(directory: str, audio_only: bool = True) -> List[str]:
-    """
-    Get list of files in directory, optionally filtering for audio files.
-
-    Args:
-        directory: Directory path
-        audio_only: Whether to include only audio files
-
-    Returns:
-        List of file paths
-    """
-    if not os.path.exists(directory) or not os.path.isdir(directory):
-        logger.error(f"Invalid directory: {directory}")
-        return []
-
-    try:
-        files = []
-        for item in os.listdir(directory):
-            full_path = os.path.join(directory, item)
-            if os.path.isfile(full_path):
-                if not audio_only or is_audio_file(full_path):
-                    files.append(full_path)
-        return files
-    except Exception as e:
-        logger.error(f"Error listing directory {directory}: {e}")
-        return []
 
 
 def save_recent_files(settings: Any, recent_files: List[str], max_count: int = 10) -> bool:
@@ -155,57 +127,6 @@ def add_recent_file(settings: Any, file_path: str, recent_files: Optional[List[s
     except Exception as e:
         logger.error(f"Error adding recent file: {e}")
         return recent_files or []
-
-
-def get_default_audio_directory() -> str:
-    """
-    Get default directory for audio files based on operating system.
-
-    Returns:
-        Path to default music directory
-    """
-    home = str(Path.home())
-
-    # Check OS-specific music directories
-    if os.name == 'nt':  # Windows
-        music_dir = os.path.join(home, 'Music')
-        if not os.path.exists(music_dir):
-            music_dir = os.path.join(home, 'Documents', 'Music')
-    elif os.name == 'posix':  # macOS, Linux
-        if os.path.exists(os.path.join(home, 'Music')):  # macOS
-            music_dir = os.path.join(home, 'Music')
-        else:  # Linux
-            music_dir = os.path.join(home, 'Music')
-            if not os.path.exists(music_dir):
-                music_dir = home
-    else:
-        music_dir = home
-
-    # Fall back to home directory if music dir doesn't exist
-    if not os.path.exists(music_dir):
-        music_dir = home
-
-    return music_dir
-
-
-def format_file_size(size_bytes: int) -> str:
-    """
-    Format file size in human-readable format.
-
-    Args:
-        size_bytes: Size in bytes
-
-    Returns:
-        Formatted size string
-    """
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    elif size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
-    else:
-        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
 def validate_audio_file_path(file_path, logger):

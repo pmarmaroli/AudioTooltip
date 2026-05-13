@@ -11,7 +11,12 @@ from PyQt5.QtWidgets import (
     QPushButton, QGroupBox, QDialogButtonBox, QFileDialog, QMessageBox
 )
 
-import azure.cognitiveservices.speech as speechsdk
+try:
+    import azure.cognitiveservices.speech as speechsdk
+    AZURE_SPEECH_AVAILABLE = True
+except ImportError:
+    speechsdk = None
+    AZURE_SPEECH_AVAILABLE = False
 import tempfile
 import os
 import wave
@@ -314,12 +319,6 @@ class SettingsDialog(QDialog):
 
         return tab
 
-    def _toggle_feature_options(self, state):
-        """Enable/disable feature options based on master switch"""
-        enabled = state == Qt.Checked
-        for checkbox in self.feature_checks.values():
-            checkbox.setEnabled(enabled)
-
     def _toggle_transcription_options(self, state):
         """Enable/disable transcription options based on master switch"""
         enabled = state == Qt.Checked
@@ -329,6 +328,14 @@ class SettingsDialog(QDialog):
 
     def _test_azure_connection(self):
         """Test Azure Speech Services connection"""
+        if not AZURE_SPEECH_AVAILABLE:
+            QMessageBox.critical(
+                self,
+                "SDK Error",
+                "Azure Speech SDK is not installed. Please install azure-cognitiveservices-speech."
+            )
+            return
+
         if not self.azure_key_edit.text() or self.azure_region_combo.currentText() == "":
             QMessageBox.warning(
                 self,

@@ -63,8 +63,7 @@ class AudioPlayback:
             if os.name == 'nt':  # Windows
                 self.logger.debug(
                     f"Starting playback with Windows default player: {file_path}")
-                self.playing_process = subprocess.Popen(
-                    ['start', '', file_path], shell=True)
+                os.startfile(file_path)
                 return True
             elif os.name == 'posix':  # macOS, Linux
                 if os.uname().sysname == 'Darwin':  # macOS

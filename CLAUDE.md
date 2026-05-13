@@ -43,7 +43,7 @@ utils/startup_utils.py     # Windows registry auto-startup management
 
 ## Version Location
 
-The version string lives in `main.py` in the splash screen paint method (~line 2015):
+The version string lives in `main.py` in the `__main__` block near the end of the file:
 ```python
 painter.drawText(20, 80, "vX.Y.Z - Audio Analysis Tool")
 ```

@@ -132,18 +132,6 @@ class EnhancedTooltip(QWidget):
         # Make title label draggable too
         self.title_label.setCursor(Qt.SizeAllCursor)
 
-        # Channel selector
-        channel_layout = QHBoxLayout()
-        channel_label = QLabel("Channel:")
-        self.channel_combo = QComboBox()
-        self.channel_combo.addItem("Mono/Left (1)", 0)
-        self.channel_combo.currentIndexChanged.connect(
-            self._on_channel_changed)
-        self.channel_combo.setEnabled(False)  # Disabled by default
-
-        channel_layout.addWidget(channel_label)
-        channel_layout.addWidget(self.channel_combo)
-
         # Control buttons - ensure they have proper icons and are visible
         self.pin_button = QToolButton(self)
         self.pin_button.setIcon(QIcon.fromTheme(
@@ -176,7 +164,6 @@ class EnhancedTooltip(QWidget):
         title_layout.addWidget(drag_handle)
         # Stretch factor to fill space
         title_layout.addWidget(self.title_label, 1)
-        title_layout.addLayout(channel_layout)
         title_layout.addWidget(self.pin_button)
         title_layout.addWidget(settings_button)
         title_layout.addWidget(close_button)
@@ -481,98 +468,6 @@ class EnhancedTooltip(QWidget):
                 "Nothing to Save",
                 "No content available to save."
             )
-
-    def _create_title_bar(self):
-        """Create custom title bar with controls and channel selection"""
-        title_layout = QHBoxLayout()
-        title_layout.setContentsMargins(5, 5, 5, 5)  # Add more margin space
-
-        # Drag handle with clearer styling
-        drag_handle = QLabel("≡")
-        drag_handle.setStyleSheet("""
-            font-size: 18px; 
-            font-weight: bold; 
-            color: #555;
-            padding: 2px 5px;
-            background-color: rgba(200, 200, 200, 80);
-            border-radius: 3px;
-        """)
-        drag_handle.setToolTip("Drag to move")
-        drag_handle.setCursor(Qt.SizeAllCursor)
-
-        # Title label
-        self.title_label = QLabel("Audio Analysis")
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 14px;")
-
-        # Create an explicit text-based close button with clear styling
-        close_button = QPushButton("✕")  # Using text instead of icon
-        close_button.setToolTip("Close")
-        close_button.clicked.connect(self.hide_with_fade)
-        close_button.setFixedSize(28, 28)
-        close_button.setStyleSheet("""
-            QPushButton {
-                font-weight: bold;
-                color: #CC0000;
-                background-color: rgba(200, 200, 200, 120);
-                border-radius: 3px;
-                padding: 3px;
-                font-size: 16px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 200, 200, 150);
-            }
-        """)
-
-        # Pin button as a text button
-        self.pin_button = QPushButton("📌")  # Pin emoji
-        self.pin_button.setToolTip("Pin tooltip (prevent auto-hide)")
-        self.pin_button.setCheckable(True)
-        self.pin_button.clicked.connect(self._toggle_pin)
-        self.pin_button.setFixedSize(28, 28)
-        self.pin_button.setStyleSheet("""
-            QPushButton {
-                font-weight: bold;
-                background-color: rgba(200, 200, 200, 120);
-                border-radius: 3px;
-                padding: 3px;
-                font-size: 14px;
-            }
-            QPushButton:checked {
-                background-color: rgba(200, 255, 200, 150);
-            }
-        """)
-
-        # Settings button as a text button
-        settings_button = QPushButton("⚙")  # Gear emoji
-        settings_button.setToolTip("Settings")
-        settings_button.clicked.connect(self._on_settings_clicked)
-        settings_button.setFixedSize(28, 28)
-        settings_button.setStyleSheet("""
-            QPushButton {
-                font-weight: bold;
-                background-color: rgba(200, 200, 200, 120);
-                border-radius: 3px;
-                padding: 3px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: rgba(200, 200, 255, 150);
-            }
-        """)
-
-        # Add to layout with spacing
-        title_layout.addWidget(drag_handle)
-        title_layout.addSpacing(5)
-        title_layout.addWidget(self.title_label, 1)
-        title_layout.addSpacing(5)
-        title_layout.addWidget(self.pin_button)
-        title_layout.addWidget(settings_button)
-        title_layout.addWidget(close_button)
-
-        # Store drag position
-        self.drag_position = None
-
-        return title_layout
 
     def _on_channel_changed(self, index):
         """Handle channel selection change"""

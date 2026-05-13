@@ -161,8 +161,6 @@ class AudioAnalyzer:
             peak_index = np.argmax(G)
             delay_ms = axe_ms[peak_index]
 
-            print(f"Successfully calculated time delay: {delay_ms:.2f} ms")
-
             self.logger.info(
                 f"Successfully calculated time delay: {delay_ms:.2f} ms")
             return delay_ms

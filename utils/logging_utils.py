@@ -8,9 +8,7 @@ import os
 import sys
 import logging
 import logging.handlers
-import traceback
-from pathlib import Path
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict
 
 
 def setup_logging(
@@ -47,9 +45,6 @@ def setup_logging(
 
         log_dir = os.path.join(base_dir, "AudioTooltip_Logs")
 
-    # Create log directory if it doesn't exist
-    os.makedirs(log_dir, exist_ok=True)
-
     # Set up root logger
     root_logger = logging.getLogger()
     
@@ -62,6 +57,9 @@ def setup_logging(
         # Add null handler to prevent logging messages
         root_logger.addHandler(logging.NullHandler())
         return root_logger
+
+    # Create log directory if it doesn't exist
+    os.makedirs(log_dir, exist_ok=True)
     
     root_logger.setLevel(log_level)
 
@@ -132,89 +130,3 @@ def get_module_logger(
     if level is not None:
         logger.setLevel(level)
     return logger
-
-
-class LoggingContext:
-    """
-    Context manager for temporarily changing log level.
-
-    Example:
-        with LoggingContext('mymodule', logging.DEBUG):
-            # Code here runs with DEBUG level
-        # Original level is restored
-    """
-
-    def __init__(self, logger_name: str, level: int):
-        """
-        Initialize context with logger name and temporary level.
-
-        Args:
-            logger_name: Name of the logger to modify
-            level: Temporary log level to apply
-        """
-        self.logger = logging.getLogger(logger_name)
-        self.level = level
-        self.old_level = self.logger.level
-
-    def __enter__(self):
-        """Set temporary log level"""
-        self.logger.setLevel(self.level)
-        return self.logger
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Restore original log level"""
-        self.logger.setLevel(self.old_level)
-
-
-def log_and_reraise(logger: logging.Logger, exception: Exception, message: str = "An error occurred"):
-    """
-    Log an exception with context and re-raise it.
-
-    Args:
-        logger: Logger to use
-        exception: Exception to log
-        message: Message to log with exception
-
-    Raises:
-        The original exception
-    """
-    logger.error(f"{message}: {str(exception)}")
-    logger.error(traceback.format_exc())
-    raise exception
-
-
-def get_log_files(log_dir: Optional[str] = None) -> Dict[str, str]:
-    """
-    Get dictionary of available log files with their modification times.
-
-    Args:
-        log_dir: Directory containing log files (uses default if None)
-
-    Returns:
-        Dict mapping filenames to last modified timestamps
-    """
-    if log_dir is None:
-        if os.name == 'nt':  # Windows
-            base_dir = os.path.expanduser("~\\AppData\\Local")
-        else:  # Linux/Mac
-            base_dir = os.path.expanduser("~/.local/share")
-
-        log_dir = os.path.join(base_dir, "AudioTooltip_Logs")
-
-    if not os.path.exists(log_dir):
-        return {}
-
-    log_files = {}
-    for filename in os.listdir(log_dir):
-        if filename.endswith('.log'):
-            filepath = os.path.join(log_dir, filename)
-            if os.path.isfile(filepath):
-                mod_time = os.path.getmtime(filepath)
-                timestamp = logging.Formatter().formatTime(
-                    logging.LogRecord('', 0, '', 0, '', None,
-                                      None, None, None),
-                    '%Y-%m-%d %H:%M:%S'
-                )
-                log_files[filename] = timestamp
-
-    return log_files

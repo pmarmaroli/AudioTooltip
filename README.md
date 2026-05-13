@@ -173,19 +173,18 @@ This project uses **Semantic Versioning** (`MAJOR.MINOR.PATCH`):
 
 ### 1. Bump the version string
 
-Open `main.py` and find the splash screen painter line (around line 2015):
+The build script (`build_release.bat`) will prompt you for the new version and patch it automatically. You can also pre-set it:
 
-```python
-painter.drawText(20, 80, "v3.0.0 - Audio Analysis Tool")
+```bash
+python build_version.py --patch 3.1.0
 ```
-
-Change `v3.0.0` to the new version number. Save the file.
 
 ### 2. Build the executable
 
 Double-click `build_release.bat`, or run it from any terminal — the script always `cd`s to its own directory first, so the working directory does not matter.
 
 The script will:
+- Prompt for the version number (or keep the current one) and patch `main.py`
 - Verify Python 3.11 is installed (attempts `winget` install if not found)
 - Create `.venv` in the project root if it does not exist
 - Install all `requirements.txt` dependencies into the venv
