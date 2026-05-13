@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bump patch version
+        id: version
+        shell: pwsh
+        run: |
+          $cur = python build_version.py --read
+          if ($LASTEXITCODE -ne 0) { throw "Cannot read version" }
+          $parts = $cur -split '\.'
+          $new = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+          python build_version.py --patch $new
+          if ($LASTEXITCODE -ne 0) { throw "Cannot patch version" }
+          echo "tag=v$new" >> $env:GITHUB_OUTPUT
+          echo "ver=$new"  >> $env:GITHUB_OUTPUT
+          Write-Host "Version bumped: v$cur -> v$new"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build executable
+        run: python -m PyInstaller AudioTooltip.spec --clean
+
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\AudioTooltip.exe")) {
+            throw "Build failed — AudioTooltip.exe not found"
+          }
+
+      - name: Create release zip
+        shell: pwsh
+        run: |
+          Copy-Item cleanup.ps1           dist\
+          Copy-Item installation-guide.md dist\
+          Compress-Archive -Path dist\* -DestinationPath "AudioTooltip-${{ steps.version.outputs.tag }}.zip"
+
+      - name: Commit version bump and tag
+        shell: pwsh
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add main.py
+          git commit -m "chore: bump version to ${{ steps.version.outputs.tag }} [skip ci]"
+          git tag ${{ steps.version.outputs.tag }}
+          git push origin main --follow-tags
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: AudioTooltip ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: AudioTooltip-${{ steps.version.outputs.tag }}.zip
