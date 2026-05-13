@@ -16,7 +16,6 @@ from core.audio_playback import AudioPlayback
 from core.audio_analyzer import AudioAnalyzer
 import os
 import sys
-import winreg
 import time
 import threading
 import gc
@@ -40,8 +39,8 @@ import subprocess
 
 # Import PyQt components
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QCursor, QPainter
-from PyQt5.QtCore import (Qt, QSettings, QTimer, QThread, pyqtSignal, QMetaObject,
-                          Q_ARG, QPoint, QSize, QT_VERSION_STR, pyqtSlot, QRect)
+from PyQt5.QtCore import (Qt, QSettings, QTimer, QThread, pyqtSignal,
+                          QT_VERSION_STR, pyqtSlot)
 from PyQt5.QtWidgets import (QApplication, QWidget, QSystemTrayIcon, QMenu, QAction,
                              QMessageBox, QFileDialog, QDialog, QVBoxLayout, QLabel, QPushButton, QSplashScreen, QProgressBar)
 import signal
@@ -53,7 +52,6 @@ signal.signal(signal.SIGINT, signal.SIG_DFL)  # Allows CTRL+C to terminate
 # Windows integration - with graceful fallbacks
 try:
     import win32api
-    import win32con
     import win32gui
     from win32com.client import Dispatch
     import pythoncom
@@ -471,26 +469,10 @@ class AudioTooltipApp(QWidget):
                 # Remove all previous hotkeys to avoid duplicates
                 try:
                     keyboard.remove_hotkey('alt+a')
-                    # obsolete: previously removed 'ctrl+shift+a' hotkey; no longer used
-                    # keyboard.remove_hotkey('ctrl+shift+a')
                     keyboard.remove_hotkey('alt+q')
                     keyboard.remove_hotkey('ctrl+alt+a')
                 except Exception:
                     pass
-
-                # Only add Alt+A for file hover detection
-                # Note: The actual hotkey handling is in track_input method
-
-                # self.module_logger.info(
-                #     "Hotkey registered: Alt+A for quick analysis")
-
-                # Show notification to inform user
-                # QTimer.singleShot(1000, lambda: self.tray_icon.showMessage(
-                #     "Hotkey Available",
-                #     "Left-click an audio file and press Alt+A to analyze it",
-                #     QSystemTrayIcon.Information,
-                #     3000
-                # ))
             else:
                 self.module_logger.warning(
                     "Keyboard module not available, hotkeys disabled")
@@ -532,32 +514,15 @@ class AudioTooltipApp(QWidget):
             if not self.settings.contains(key):
                 self.settings.setValue(key, "true")
 
-        # Set startup by default
-        try:
-            if getattr(sys, 'frozen', False):
-                # If running as exe (PyInstaller)
-                executable_path = f'"{sys.executable}"'
-            else:
-                # If running as script
-                executable_path = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
-
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-                0,
-                winreg.KEY_READ | winreg.KEY_SET_VALUE
-            )
-
+        # Set startup by default on first run only
+        if not self.settings.contains("start_with_windows"):
             try:
-                winreg.QueryValueEx(key, "AudioTooltip")
-            except FileNotFoundError:
-                # Not found, so add it (default is enabled)
-                winreg.SetValueEx(key, "AudioTooltip", 0,
-                                  winreg.REG_SZ, executable_path)
-
-            winreg.CloseKey(key)
-        except Exception as e:
-            self.module_logger.warning(f"Could not set startup: {e}")
+                from utils.startup_utils import StartupManager
+                startup_mgr = StartupManager()
+                startup_mgr.enable_startup()
+                self.settings.setValue("start_with_windows", True)
+            except Exception as e:
+                self.module_logger.warning(f"Could not set startup: {e}")
 
     def _setting_bool(self, key: str, default: bool = False) -> bool:
         """Read a boolean setting stored as 'true'/'false' string."""
@@ -569,8 +534,6 @@ class AudioTooltipApp(QWidget):
             return int(self.settings.value(key, str(default)))
         except (ValueError, TypeError):
             return default
-
-    # Add this to setup_tray method in AudioTooltipApp class
 
     def setup_tray(self):
         """Setup system tray icon and menu"""
@@ -667,9 +630,7 @@ class AudioTooltipApp(QWidget):
     def show_help_notification(self):
         """Show the help/instructions notification"""
         self.module_logger.info("Show Instructions menu clicked")
-        print("DEBUG: Show Instructions clicked!")  # Debug output
         
-        # Show both message box and tray notification for testing
         QMessageBox.information(
             None,
             "Audio Tooltip - How to Use",
@@ -680,10 +641,8 @@ class AudioTooltipApp(QWidget):
             "Audio Tooltip - How to Use",
             "3 ways to analyze audio:\n1) Middle-click on an audio file\n2) Select a file and press Alt+A\n3) Press Alt+D for drop window\n\nCheck system tray (hidden icons) for settings.\nFirst analysis may take time.",
             QSystemTrayIcon.Information,
-            15000  # Show for 15 seconds
+            15000
         )
-        
-        print("DEBUG: Both message box and notification should have been shown!")  # Debug output
 
     def show_delayed_help(self):
         """Show a delayed help notification"""
@@ -875,14 +834,6 @@ class AudioTooltipApp(QWidget):
         self.module_logger.debug(
             f"Garbage collection: {collected} objects collected")
 
-    def get_top_right_position(self, tooltip):
-        """Calculate top-right position for the tooltip"""
-        screen = QApplication.primaryScreen().geometry()
-        tooltip_size = tooltip.sizeHint()
-        x = screen.width() - tooltip_size.width() - 20
-        y = 40
-        return QPoint(x, y)
-
     def show_progress_dialog(self, message):
         """Show progress dialog in main thread"""
         if not hasattr(self, 'progress_dialog') or self.progress_dialog is None:
@@ -1021,6 +972,11 @@ class AudioTooltipApp(QWidget):
         """Slot for worker finished signal that delegates to cleanup_worker, ignoring result."""
         self.cleanup_worker(worker)
 
+    def _cleanup_list_worker(self, worker_list, worker):
+        """Remove a finished worker from its tracking list."""
+        if worker in worker_list:
+            worker_list.remove(worker)
+
     def handle_analysis_result(self, result, file_path, channel):
         """Handle successful audio analysis"""
         self.module_logger.info(
@@ -1087,6 +1043,7 @@ class AudioTooltipApp(QWidget):
         worker.finished.connect(self.update_visualization)
         worker.error.connect(self.handle_worker_error)
         worker.finished.connect(self._emit_hide_progress)
+        worker.finished.connect(lambda _, w=worker: self._cleanup_list_worker(self.viz_workers, w))
 
         # Store worker reference
         if not hasattr(self, "viz_workers"):
@@ -1197,8 +1154,6 @@ class AudioTooltipApp(QWidget):
             self.module_logger.error(f"Error in show_tooltip_slot: {e}")
             self.module_logger.error(traceback.format_exc())
 
-    # In main.py, add methods to handle transcription requests
-
     def on_transcription_requested(self, file_path, channel, language=None, transcription_channel=-1):
         """Handle transcription request from tooltip"""
         self.module_logger.info(
@@ -1217,6 +1172,7 @@ class AudioTooltipApp(QWidget):
         worker.file_saved.connect(
             self.show_file_saved_notification)
         worker.file_saved.connect(self.set_transcript_file_path)
+        worker.finished.connect(lambda _, w=worker: self._cleanup_list_worker(self.transcription_workers, w))
 
         # Store worker reference
         if not hasattr(self, "transcription_workers"):
@@ -1252,260 +1208,189 @@ class AudioTooltipApp(QWidget):
         self.tooltip.view_transcript_button.setEnabled(True)
 
     def check_file_under_cursor(self):
-        """Check if there's an audio file under the cursor with better window detection"""
-        self.module_logger.info("Checking for audio file under cursor")
+        """Detect selected audio file in Explorer windows.
+
+        Checks foreground window first, then all Explorer windows in z-order,
+        then focused items, and finally the clipboard as a last resort.
+        """
+        if not WINDOWS_API_AVAILABLE:
+            self.module_logger.error("Cannot detect files: Windows API unavailable")
+            with self._detection_lock:
+                self.detection_active = False
+            return False
+
+        self.module_logger.info("Starting audio file detection")
 
         try:
-            # Initialize COM for this thread with error handling
+            # Initialize COM for this thread
             try:
                 pythoncom.CoInitializeEx(0)
             except Exception as com_e:
-                self.module_logger.warning(
-                    f"COM initialization error: {com_e}")
-                # Continue anyway, it might still work
+                self.module_logger.warning(f"COM initialization error: {com_e}")
 
-            # Get cursor position with error handling
-            try:
-                cursor_pos = win32api.GetCursorPos()
-                self.module_logger.info(f"Cursor position: {cursor_pos}")
-            except Exception as cursor_e:
-                self.module_logger.error(
-                    f"Failed to get cursor position: {cursor_e}")
-                return False
-
-            # Get the foreground window first - this is the most reliable way to know which window has focus
+            # Get foreground window info
+            foreground_hwnd = None
             try:
                 foreground_hwnd = win32gui.GetForegroundWindow()
-                foreground_title = win32gui.GetWindowText(foreground_hwnd)
                 self.module_logger.info(
-                    f"Foreground window: {foreground_hwnd}, Title: {foreground_title}")
-
-                # Check if it looks like Explorer
-                is_explorer = "explorer" in foreground_title.lower(
-                ) or "file explorer" in foreground_title.lower()
-                self.module_logger.info(
-                    f"Foreground window is Explorer: {is_explorer}")
+                    f"Foreground window: {win32gui.GetWindowText(foreground_hwnd)}, HWND: {foreground_hwnd}")
             except Exception as fg_e:
-                self.module_logger.warning(
-                    f"Error getting foreground window: {fg_e}")
-                foreground_hwnd = None
-                is_explorer = False
+                self.module_logger.warning(f"Error getting foreground window: {fg_e}")
 
-            # Try to get the Explorer window containing the cursor
-            explorer_window = None
-            explorer_path = None
-            found_audio_file = False
-
-            # Wrap Shell API calls in try/except
             try:
                 shell = Dispatch("Shell.Application")
                 windows = shell.Windows()
+                self.module_logger.debug(f"Found {windows.Count} Explorer windows")
 
-                self.module_logger.info(f"Found {windows.Count} shell windows")
-
-                # First, try the foreground window if it's Explorer
+                found_file = False
                 foreground_explorer = None
-                if is_explorer and foreground_hwnd:
+
+                # --- Step 1: Match foreground window to a Shell window ---
+                if foreground_hwnd:
                     for i in range(windows.Count):
                         try:
                             window = windows.Item(i)
                             if window is None:
                                 continue
-
                             try:
-                                window_hwnd = window.HWND
-                                if window_hwnd == foreground_hwnd:
+                                if window.HWND == foreground_hwnd:
                                     foreground_explorer = window
-                                    explorer_window = window
-                                    try:
-                                        explorer_path = window.Document.Folder.Self.Path
-                                        self.module_logger.info(
-                                            f"Found foreground Explorer window at {explorer_path}")
-                                        break
-                                    except Exception as path_e:
-                                        self.module_logger.warning(
-                                            f"Error getting folder path: {path_e}")
-                            except Exception as hwnd_e:
-                                self.module_logger.warning(
-                                    f"Error comparing HWND: {hwnd_e}")
-                        except Exception as item_e:
-                            self.module_logger.warning(
-                                f"Error accessing window item: {item_e}")
+                                    break
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
 
-                # If foreground window is Explorer, prioritize it for selection checking
+                # --- Step 2: Check foreground Explorer window ---
                 if foreground_explorer:
                     try:
-                        selected_items = foreground_explorer.Document.SelectedItems()
-                        if selected_items and selected_items.Count > 0:
-                            for i in range(selected_items.Count):
+                        selected = foreground_explorer.Document.SelectedItems()
+                        if selected and selected.Count > 0:
+                            for j in range(selected.Count):
                                 try:
-                                    item = selected_items.Item(i)
-                                    file_path = item.Path
-
+                                    file_path = selected.Item(j).Path
                                     if is_audio_file(file_path) and os.path.exists(file_path):
-                                        self.module_logger.info(
-                                            f"Audio file selected in foreground window: {file_path}")
-
-                                        # Safer invocation with fallback
-                                        try:
-                                            QMetaObject.invokeMethod(
-                                                self,
-                                                "analyze_file",
-                                                Qt.QueuedConnection,
-                                                Q_ARG(str, file_path)
-                                            )
-                                            found_audio_file = True
-                                            return True
-                                        except Exception as invoke_e:
-                                            self.module_logger.error(
-                                                f"Error with QMetaObject: {invoke_e}")
-                                            # Use signal as fallback
-                                            self.file_detected_signal.emit(file_path)
-                                            found_audio_file = True
-                                            return True
+                                        self.module_logger.info(f"Audio file in foreground: {file_path}")
+                                        self.file_detected_signal.emit(file_path)
+                                        return True
                                 except Exception as item_e:
-                                    self.module_logger.warning(
-                                        f"Error processing selected item: {item_e}")
+                                    self.module_logger.warning(f"Error processing selected item: {item_e}")
                     except Exception as sel_e:
-                        self.module_logger.warning(
-                            f"Error getting selected items from foreground: {sel_e}")
+                        self.module_logger.warning(f"Error getting selected items from foreground: {sel_e}")
 
-                # If we didn't find anything in the foreground window, check ALL Explorer windows
-                if not found_audio_file:
-                    self.module_logger.info(
-                        "Checking all Explorer windows for selection")
+                # --- Step 3: Check all Explorer windows in z-order ---
+                self.module_logger.info("Checking all Explorer windows in z-order")
 
-                    # First, check windows that contain the cursor (in z-order from top to bottom)
-                    windows_with_cursor = []
+                def enum_windows_callback(hwnd, windows_list):
+                    if win32gui.IsWindowVisible(hwnd):
+                        windows_list.append(hwnd)
 
+                window_z_order = []
+                win32gui.EnumWindows(enum_windows_callback, window_z_order)
+
+                # Map shell windows to z-order
+                shell_windows_by_z = []
+                for hwnd in window_z_order:
                     for i in range(windows.Count):
                         try:
                             window = windows.Item(i)
-                            if window is None:
+                            if window and window.HWND == hwnd:
+                                shell_windows_by_z.append(window)
+                                break
+                        except Exception:
+                            pass
+
+                # Add any remaining shell windows not matched by z-order
+                for i in range(windows.Count):
+                    try:
+                        window = windows.Item(i)
+                        if window and window not in shell_windows_by_z:
+                            shell_windows_by_z.append(window)
+                    except Exception:
+                        pass
+
+                # Check selected items in each window (z-order, top to bottom)
+                for window in shell_windows_by_z:
+                    try:
+                        # Skip the foreground window we already checked
+                        if foreground_explorer and window.HWND == foreground_explorer.HWND:
+                            continue
+
+                        try:
+                            selected = window.Document.SelectedItems()
+                            if selected is None or selected.Count == 0:
                                 continue
 
-                            try:
-                                hwnd = window.HWND
-                                rect = win32gui.GetWindowRect(hwnd)
-
-                                # Check if cursor is inside this window
-                                if (rect[0] <= cursor_pos[0] <= rect[2] and rect[1] <= cursor_pos[1] <= rect[3]):
-                                    windows_with_cursor.append(window)
-                                    self.module_logger.info(
-                                        f"Cursor is inside window {i}")
-                            except Exception as rect_e:
-                                self.module_logger.warning(
-                                    f"Error getting window rectangle: {rect_e}")
-                        except Exception as item_e:
-                            self.module_logger.warning(
-                                f"Error accessing window item: {item_e}")
-
-                    # Check windows with cursor first
-                    for window in windows_with_cursor:
-                        try:
-                            selected_items = window.Document.SelectedItems()
-                            if selected_items and selected_items.Count > 0:
-                                for i in range(selected_items.Count):
-                                    try:
-                                        item = selected_items.Item(i)
-                                        file_path = item.Path
-
-                                        if is_audio_file(file_path) and os.path.exists(file_path):
-                                            self.module_logger.info(
-                                                f"Audio file selected in window under cursor: {file_path}")
-                                            # Use signal instead of QTimer from background thread
-                                            self.file_detected_signal.emit(file_path)
-                                            found_audio_file = True
-                                            return True
-                                    except Exception as item_e:
-                                        self.module_logger.warning(
-                                            f"Error processing selected item: {item_e}")
-                        except Exception as sel_e:
-                            self.module_logger.warning(
-                                f"Error getting selected items: {sel_e}")
-
-                    # If still not found, check all remaining Explorer windows
-                    if not found_audio_file:
-                        for i in range(windows.Count):
-                            try:
-                                window = windows.Item(i)
-                                if window is None or window in windows_with_cursor:
-                                    continue
-
+                            for j in range(selected.Count):
                                 try:
-                                    selected_items = window.Document.SelectedItems()
-                                    if selected_items and selected_items.Count > 0:
-                                        for j in range(selected_items.Count):
-                                            try:
-                                                item = selected_items.Item(j)
-                                                file_path = item.Path
+                                    file_path = selected.Item(j).Path
+                                    if is_audio_file(file_path) and os.path.exists(file_path):
+                                        self.module_logger.info(f"Audio file detected: {file_path}")
+                                        self.file_detected_signal.emit(file_path)
+                                        return True
+                                except Exception as item_e:
+                                    self.module_logger.warning(f"Error processing item: {item_e}")
+                        except Exception as sel_e:
+                            self.module_logger.warning(f"Error getting selected items: {sel_e}")
+                    except Exception as window_e:
+                        self.module_logger.warning(f"Error processing window: {window_e}")
 
-                                                if is_audio_file(file_path) and os.path.exists(file_path):
-                                                    self.module_logger.info(
-                                                        f"Audio file selected in other window: {file_path}")
-                                                    self.file_detected_signal.emit(file_path)
-                                                    found_audio_file = True
-                                                    return True
-                                            except Exception as item_e:
-                                                self.module_logger.warning(
-                                                    f"Error processing selected item: {item_e}")
-                                except Exception as sel_e:
-                                    self.module_logger.warning(
-                                        f"Error getting selected items: {sel_e}")
-                            except Exception as window_e:
-                                self.module_logger.warning(
-                                    f"Error processing window: {window_e}")
-
-                # Last resort - try clipboard for file path
-                if not found_audio_file:
+                # --- Step 4: Try focused item fallback ---
+                self.module_logger.info("Trying focused items")
+                for window in shell_windows_by_z:
                     try:
-                        clipboard = QApplication.clipboard()
-                        clipboard_text = clipboard.text()
+                        if window.Visible:
+                            try:
+                                focused = window.Document.FocusedItem
+                                if focused:
+                                    file_path = focused.Path
+                                    if is_audio_file(file_path) and os.path.exists(file_path):
+                                        self.module_logger.info(f"Audio file detected (focused): {file_path}")
+                                        self.file_detected_signal.emit(file_path)
+                                        return True
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
-                        if clipboard_text and os.path.exists(clipboard_text) and is_audio_file(clipboard_text):
-                            self.module_logger.info(
-                                f"Found audio file in clipboard: {clipboard_text}")
-                            self.file_detected_signal.emit(clipboard_text)
-                            return True
-                    except Exception as clip_e:
-                        self.module_logger.error(
-                            f"Error checking clipboard: {clip_e}")
+                # --- Step 5: Try clipboard ---
+                self.module_logger.info("Trying clipboard for file path")
+                try:
+                    clipboard = QApplication.clipboard()
+                    clipboard_text = clipboard.text()
+                    if clipboard_text and os.path.exists(clipboard_text) and is_audio_file(clipboard_text):
+                        self.module_logger.info(f"Found audio file in clipboard: {clipboard_text}")
+                        self.file_detected_signal.emit(clipboard_text)
+                        return True
+                except Exception as clip_e:
+                    self.module_logger.error(f"Error checking clipboard: {clip_e}")
 
-                # Nothing worked, notify user
-                if not found_audio_file:
-                    try:
-                        self.tray_icon.showMessage(
-                            "Audio Tooltip",
-                            "Couldn't identify an audio file under cursor. Try selecting an audio file first.",
-                            QSystemTrayIcon.Information,
-                            3000
-                        )
-                    except Exception as msg_e:
-                        self.module_logger.error(
-                            f"Failed to show tray message: {msg_e}")
-
-                return found_audio_file
+                # Nothing found
+                self.module_logger.info("No audio files found in any window")
+                self.tray_icon.showMessage(
+                    "Audio Tooltip",
+                    "No audio file selected. Please select an audio file in Explorer.",
+                    QSystemTrayIcon.Information,
+                    3000
+                )
+                return False
 
             except Exception as shell_e:
                 self.module_logger.error(f"Shell API error: {shell_e}")
-                # Don't return, we'll try fallback approaches
+                self.module_logger.error(traceback.format_exc())
                 return False
 
         except Exception as e:
-            self.module_logger.error(f"Error checking file under cursor: {e}")
+            self.module_logger.error(f"Error in audio file detection: {e}")
             self.module_logger.error(traceback.format_exc())
             return False
         finally:
-            # Reset detection flag
             with self._detection_lock:
                 self.detection_active = False
-
-            # Clean up COM
             try:
                 pythoncom.CoUninitialize()
-            except Exception as uninit_e:
-                self.module_logger.warning(
-                    f"Error uninitializing COM: {uninit_e}")
+            except Exception:
+                pass
 
     def track_input(self):
         # Require at least one input facility: Windows API (mouse) or keyboard hooks
@@ -1542,12 +1427,6 @@ class AudioTooltipApp(QWidget):
                 self.module_logger.info("Hotkey registered successfully")
             except Exception as reg_e:
                 self.module_logger.error(f"Failed to register hotkey: {reg_e}")
-
-        # Mouse triple-right-click detection (Windows only)
-        right_button_prev = False
-        click_count = 0
-        last_click_time = 0.0
-        click_threshold = 1.2  # seconds between clicks to count as consecutive
 
         # Poll middle mouse button (single click) using Win32 API if available
         middle_button_prev = False
@@ -1594,313 +1473,20 @@ class AudioTooltipApp(QWidget):
         self.module_logger.info("Input tracking thread terminated")
 
     def trigger_detection(self):
-        self.module_logger.info(
-            "Two-finger tap detected, initiating detection")
+        """Trigger audio file detection from tray menu."""
+        self.module_logger.info("Tray menu detection triggered")
         with self._detection_lock:
             if self.detection_active:
                 return
             self.detection_active = True
         try:
-            detection_thread = threading.Thread(target=self.detect_audio_file)
+            detection_thread = threading.Thread(target=self.check_file_under_cursor)
             detection_thread.daemon = True
             detection_thread.start()
         except Exception as e:
             self.module_logger.error(f"Error starting detection thread: {e}")
             with self._detection_lock:
                 self.detection_active = False
-
-    def detect_audio_file(self):
-        """Detect selected audio file in Explorer with improved multi-window handling"""
-        if not WINDOWS_API_AVAILABLE:
-            self.module_logger.error(
-                "Cannot detect files: Windows API unavailable")
-            with self._detection_lock:
-                self.detection_active = False
-            return
-
-        self.module_logger.info("Starting audio file detection")
-
-        try:
-            # Initialize COM for this thread
-            pythoncom.CoInitializeEx(0)
-
-            # Get foreground window info first
-            foreground_hwnd = None
-            try:
-                foreground_hwnd = win32gui.GetForegroundWindow()
-                window_title = win32gui.GetWindowText(foreground_hwnd)
-                self.module_logger.info(
-                    f"Foreground window: {window_title}, HWND: {foreground_hwnd}")
-            except Exception as fg_e:
-                self.module_logger.warning(
-                    f"Error getting foreground window info: {fg_e}")
-
-            # Try to get Shell Application
-            try:
-                shell = Dispatch("Shell.Application")
-                windows = shell.Windows()
-
-                self.module_logger.debug(
-                    f"Found {windows.Count} Explorer windows")
-
-                # Flag to track if an audio file was found
-                found_file = False
-
-                # First, try to match foreground window with Shell window
-                foreground_explorer = None
-
-                if foreground_hwnd:
-                    for i in range(windows.Count):
-                        try:
-                            window = windows.Item(i)
-                            if window is None:
-                                continue
-
-                            try:
-                                window_hwnd = window.HWND
-                                if window_hwnd == foreground_hwnd:
-                                    foreground_explorer = window
-                                    self.module_logger.info(
-                                        f"Found matching foreground Explorer window at index {i}")
-                                    break
-                            except Exception as hwnd_e:
-                                self.module_logger.warning(
-                                    f"Error comparing HWND: {hwnd_e}")
-                        except Exception as win_e:
-                            self.module_logger.warning(
-                                f"Error accessing window item {i}: {win_e}")
-
-                # If we found the foreground Explorer window, check it first
-                if foreground_explorer:
-                    try:
-                        selected = foreground_explorer.Document.SelectedItems()
-                        if selected and selected.Count > 0:
-                            self.module_logger.info(
-                                f"Found {selected.Count} selected items in foreground window")
-
-                            # Check each selected item
-                            for j in range(selected.Count):
-                                try:
-                                    item = selected.Item(j)
-                                    current_file = item.Path
-
-                                    # Verify file exists and is audio
-                                    if os.path.exists(current_file) and is_audio_file(current_file):
-                                        self.module_logger.info(
-                                            f"Audio file detected in foreground: {current_file}")
-
-                                        # Process file in main thread
-                                        QMetaObject.invokeMethod(
-                                            self,
-                                            "analyze_file",
-                                            Qt.QueuedConnection,
-                                            Q_ARG(str, current_file),
-                                            # Default to channel 0
-                                            Q_ARG(int, 0)
-                                        )
-                                        found_file = True
-                                        break
-                                except Exception as item_e:
-                                    self.module_logger.error(
-                                        f"Error processing foreground item {j}: {item_e}")
-                        else:
-                            self.module_logger.info(
-                                "No items selected in foreground window")
-                    except Exception as sel_e:
-                        self.module_logger.error(
-                            f"Error accessing selected items in foreground window: {sel_e}")
-
-                # If nothing found in foreground window, or no foreground Explorer window found,
-                # check ALL Explorer windows (like before)
-                if not found_file:
-                    self.module_logger.info(
-                        "Checking all Explorer windows for selected audio files")
-
-                    # Get Z-ordered list of visible windows first
-                    visible_windows = []
-
-                    # Use win32gui to get z-order of windows
-                    def enum_windows_callback(hwnd, windows_list):
-                        if win32gui.IsWindowVisible(hwnd):
-                            windows_list.append(hwnd)
-
-                    window_z_order = []
-                    win32gui.EnumWindows(enum_windows_callback, window_z_order)
-
-                    # Now map shell windows to z-order if possible
-                    shell_windows_by_z = []
-                    for hwnd in window_z_order:
-                        for i in range(windows.Count):
-                            try:
-                                window = windows.Item(i)
-                                if window and window.HWND == hwnd:
-                                    shell_windows_by_z.append(window)
-                                    break
-                            except Exception:
-                                pass
-
-                    # Add any remaining shell windows that we couldn't match
-                    for i in range(windows.Count):
-                        try:
-                            window = windows.Item(i)
-                            if window and window not in shell_windows_by_z:
-                                shell_windows_by_z.append(window)
-                        except Exception:
-                            pass
-
-                    # Now check each window in Z order (top to bottom)
-                    for window in shell_windows_by_z:
-                        try:
-                            # Skip if it's the foreground window we already checked
-                            if foreground_explorer and window.HWND == foreground_explorer.HWND:
-                                continue
-
-                            try:
-                                window_path = window.Document.Folder.Self.Path
-                                window_title = window.Document.Title
-                                self.module_logger.info(
-                                    f"Checking window: Title={window_title}, Path={window_path}")
-                            except Exception:
-                                self.module_logger.debug(
-                                    "Could not get window details")
-                                continue
-
-                            # Try to get selected items with better error handling
-                            try:
-                                selected = window.Document.SelectedItems()
-
-                                if selected is None or selected.Count == 0:
-                                    self.module_logger.debug(
-                                        "No items selected in this window")
-                                    continue
-
-                                self.module_logger.info(
-                                    f"Found {selected.Count} selected items")
-
-                                # Check each selected item
-                                for j in range(selected.Count):
-                                    try:
-                                        item = selected.Item(j)
-                                        current_file = item.Path
-
-                                        # Verify it's an audio file
-                                        if is_audio_file(current_file) and os.path.exists(current_file):
-                                            self.module_logger.info(
-                                                f"Audio file detected: {current_file}")
-
-                                            # Process file in main thread
-                                            QMetaObject.invokeMethod(
-                                                self,
-                                                "analyze_file",
-                                                Qt.QueuedConnection,
-                                                Q_ARG(str, current_file),
-                                                # Default to channel 0
-                                                Q_ARG(int, 0)
-                                            )
-                                            found_file = True
-                                            break
-                                    except Exception as item_e:
-                                        self.module_logger.error(
-                                            f"Error processing item: {item_e}")
-
-                                if found_file:
-                                    break
-
-                            except Exception as select_e:
-                                self.module_logger.error(
-                                    f"Error accessing selected items: {select_e}")
-
-                        except Exception as window_e:
-                            self.module_logger.error(
-                                f"Error processing window: {window_e}")
-
-                    # Try fallback to focused item if no selection found
-                    if not found_file:
-                        self.module_logger.info(
-                            "No selected items found, trying focused items")
-                        for window in shell_windows_by_z:
-                            try:
-                                if window.Visible:
-                                    try:
-                                        focused = window.Document.FocusedItem
-                                        if focused:
-                                            current_file = focused.Path
-                                            self.module_logger.info(
-                                                f"Focused file: {current_file}")
-
-                                            if is_audio_file(current_file) and os.path.exists(current_file):
-                                                self.module_logger.info(
-                                                    f"Audio file detected (focused): {current_file}")
-
-                                                QMetaObject.invokeMethod(
-                                                    self,
-                                                    "analyze_file",
-                                                    Qt.QueuedConnection,
-                                                    Q_ARG(str, current_file),
-                                                    Q_ARG(int, 0)
-                                                )
-                                                found_file = True
-                                                break
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-
-                    # Last resort - try clipboard
-                    if not found_file:
-                        self.module_logger.info(
-                            "Trying clipboard for file path")
-                        try:
-                            clipboard = QApplication.clipboard()
-                            clipboard_text = clipboard.text()
-
-                            if clipboard_text and os.path.exists(clipboard_text) and is_audio_file(clipboard_text):
-                                self.module_logger.info(
-                                    f"Found audio file in clipboard: {clipboard_text}")
-
-                                QMetaObject.invokeMethod(
-                                    self,
-                                    "analyze_file",
-                                    Qt.QueuedConnection,
-                                    Q_ARG(str, clipboard_text),
-                                    Q_ARG(int, 0)
-                                )
-                                found_file = True
-                        except Exception as clip_e:
-                            self.module_logger.error(
-                                f"Error checking clipboard: {clip_e}")
-
-                    if not found_file:
-                        self.module_logger.info(
-                            "No audio files found in any window")
-                        # Show notification to user
-                        self.tray_icon.showMessage(
-                            "Audio Tooltip",
-                            "No audio file selected. Please select an audio file in Explorer.",
-                            QSystemTrayIcon.Information,
-                            3000
-                        )
-
-            except Exception as shell_e:
-                self.module_logger.error(f"Error accessing Shell: {shell_e}")
-                self.module_logger.error(traceback.format_exc())
-
-        except Exception as e:
-            self.module_logger.error(f"Error in audio file detection: {e}")
-            self.module_logger.error(traceback.format_exc())
-
-        finally:
-            # Reset detection flag
-            with self._detection_lock:
-                self.detection_active = False
-
-            # Clean up COM
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
-
-            self.module_logger.info("Audio file detection completed")
 
 
 def finish_startup_sequence(splash, tooltip_app):
@@ -1910,18 +1496,12 @@ def finish_startup_sequence(splash, tooltip_app):
     # Show instructions dialog after a brief delay
     QTimer.singleShot(500, tooltip_app.show_help_notification)
 
-# Add to main.py (near the top of the main() function)
+
 def main(app=None, splash=None, args=None):
     """Main application entry point"""
-    print("Main function started")
     
     # Handle startup/minimized mode
     startup_mode = args and (args.startup or args.minimized) if args else False
-    print(f"Startup mode: {startup_mode}")
-
-    print(f"Python version: {sys.version}")
-    import PyQt5
-    print(f"PyQt5 version: {PyQt5.QtCore.QT_VERSION_STR}")
 
     try:
         # If app wasn't provided, create it (for backward compatibility)
@@ -1930,11 +1510,9 @@ def main(app=None, splash=None, args=None):
             app.setQuitOnLastWindowClosed(False)
             app.setApplicationName("Audio Tooltip")
             app.setOrganizationName("MCDE - FHL 2025")
-        print("App configuration checked")
 
         # Update splash message if splash exists
         if splash:
-            print("Updating splash message")
             splash.showMessage("Initializing components...",
                                Qt.AlignBottom | Qt.AlignCenter, QColor(255, 255, 255))
             app.processEvents()
@@ -1949,9 +1527,7 @@ def main(app=None, splash=None, args=None):
             app.processEvents()
 
         # Create main app with explicit error handling
-        print("About to create AudioTooltipApp")
         tooltip_app = AudioTooltipApp(startup_mode=startup_mode)
-        print("AudioTooltipApp created successfully")
 
         # Update splash for final step and always show instructions
         if splash:
@@ -1961,25 +1537,19 @@ def main(app=None, splash=None, args=None):
             # Keep splash visible a bit longer, then show instructions
             QTimer.singleShot(2000, lambda: finish_startup_sequence(splash, tooltip_app))
         else:
-            print("No splash to finish - showing instructions")
             # Show instructions immediately if no splash
             QTimer.singleShot(1000, tooltip_app.show_help_notification)
 
         # Start the event loop
-        print("Starting event loop")
         return app.exec_()
     except Exception as e:
-        print(f"ERROR STARTING APPLICATION: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logging.getLogger("AudioTooltipApp").critical(f"Error starting application: {e}", exc_info=True)
         if splash:
             splash.finish(None)
         return 1
 
 
 if __name__ == '__main__':
-    print("Starting application initialization...")
-    
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='AudioTooltip - Audio Analysis Tool')
     parser.add_argument('--startup', action='store_true', 
@@ -1990,21 +1560,16 @@ if __name__ == '__main__':
 
     # Create application first
     app = QApplication(sys.argv)
-    print("QApplication created")
 
     app.setQuitOnLastWindowClosed(False)  # Keep running when windows close
     app.setApplicationName("Audio Tooltip")
     app.setOrganizationName("MCDE - FHL 2025")
-    print("Application configured")
 
     # Always create and show splash screen
-    print("Setting up splash screen...")
     splash_pixmap = QPixmap(500, 300)
     splash_pixmap.fill(QColor(50, 50, 80))  # Dark blue background
-    print("Splash pixmap created")
 
     # Draw content on the pixmap
-    print("Creating painter...")
     painter = QPainter(splash_pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
     painter.setRenderHint(QPainter.TextAntialiasing)
@@ -2033,20 +1598,15 @@ if __name__ == '__main__':
     painter.fillRect(22, 242, 456, 16, QColor(100, 150, 255))
     
     painter.end()
-    print("Splash content painted")
 
     # Create splash screen using the painted pixmap
     splash = QSplashScreen(splash_pixmap)
     splash.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.SplashScreen)
     splash.show()
     app.processEvents()
-    print("Splash screen shown")
 
     # Close the PyInstaller native splash now that the Qt splash is visible
     if pyi_splash is not None:
         pyi_splash.close()
-        print("PyInstaller native splash closed")
 
-    # More execution...
-    print("About to call main()")
     sys.exit(main(app, splash, args))

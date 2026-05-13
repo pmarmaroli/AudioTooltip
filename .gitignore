@@ -18,3 +18,4 @@ dist
 .gitignore.sourcecode
 sourceCode.txt
 linkedinPost.txt
+__pycache__
