@@ -1,8 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM Always run from the directory containing this script
-cd /d "%~dp0"
+REM Always run from the project root (one level up from scripts/)
+cd /d "%~dp0.."
 
 echo ============================================
 echo  AudioTooltip Release Upload Script
@@ -73,7 +73,7 @@ echo [OK] Authenticated with GitHub.
 echo.
 
 REM ── 3. Read version from main.py ───────────────────────────────────────────
-for /f "tokens=*" %%a in ('python build_version.py --read 2^>nul') do set VERSION=%%a
+for /f "tokens=*" %%a in ('python scripts\build_version.py --read 2^>nul') do set VERSION=%%a
 
 if "!VERSION!"=="" (
     echo [ERROR] Could not read version from main.py.
@@ -86,7 +86,7 @@ echo.
 REM ── 4. Verify dist folder contents ─────────────────────────────────────────
 if not exist "dist\AudioTooltip.exe" (
     echo [ERROR] dist\AudioTooltip.exe not found.
-    echo         Run build_release.bat first.
+    echo         Run scripts\build_release.bat first.
     pause
     exit /b 1
 )

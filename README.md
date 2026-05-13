@@ -77,11 +77,21 @@ AudioTooltip/
 │   └── startup_utils.py       # Windows startup management
 │
 ├── resources/                 # Application resources
+│   ├── splash.png             # PyInstaller splash screen
+│   ├── test_audio.wav         # Test audio file
 │   └── icons/                 # Application icons
 │
+├── scripts/                   # Build and release tooling
+│   ├── build_release.bat      # Release build script
+│   ├── upload_release.bat     # Release upload script
+│   ├── build_version.py       # Version management utility
+│   └── cleanup.ps1            # Uninstall/cleanup script
+│
+├── .github/workflows/
+│   └── release.yml            # CI/CD auto-release pipeline
+│
 ├── main.py                    # Application entry point
-├── build_release.bat          # Release build script
-├── cleanup.ps1                # Uninstall/cleanup script
+├── start.bat                  # Dev launcher (venv + deps + run)
 ├── AudioTooltip.spec          # PyInstaller spec file
 ├── README.md                  # Project documentation
 ├── installation-guide.md      # Post-install user guide
@@ -173,15 +183,15 @@ This project uses **Semantic Versioning** (`MAJOR.MINOR.PATCH`):
 
 ### 1. Bump the version string
 
-The build script (`build_release.bat`) will prompt you for the new version and patch it automatically. You can also pre-set it:
+The build script (`scripts/build_release.bat`) will prompt you for the new version and patch it automatically. You can also pre-set it:
 
 ```bash
-python build_version.py --patch 3.1.0
+python scripts/build_version.py --patch 3.1.0
 ```
 
 ### 2. Build the executable
 
-Double-click `build_release.bat`, or run it from any terminal — the script always `cd`s to its own directory first, so the working directory does not matter.
+Double-click `scripts/build_release.bat`, or run it from any terminal — the script always `cd`s to the project root first, so the working directory does not matter.
 
 The script will:
 - Prompt for the version number (or keep the current one) and patch `main.py`

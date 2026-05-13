@@ -1,8 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM Always run from the directory containing this script
-cd /d "%~dp0"
+REM Always run from the project root (one level up from scripts/)
+cd /d "%~dp0.."
 
 echo ============================================
 echo  AudioTooltip Build Script
@@ -11,7 +11,7 @@ echo.
 
 REM ── 0. Ask for version number ────────────────────────────────────────────────
 REM Read current version from main.py
-for /f "tokens=*" %%a in ('python build_version.py --read 2^>nul') do set CURRENT_VERSION=%%a
+for /f "tokens=*" %%a in ('python scripts\build_version.py --read 2^>nul') do set CURRENT_VERSION=%%a
 
 echo Current version in code: v%CURRENT_VERSION%
 echo.
@@ -21,7 +21,7 @@ REM If user pressed Enter without typing, keep current version
 if "!VERSION!"=="" set VERSION=%CURRENT_VERSION%
 
 echo [INFO] Patching version to v!VERSION! in main.py...
-python build_version.py --patch !VERSION!
+python scripts\build_version.py --patch !VERSION!
 if errorlevel 1 (
     echo [ERROR] Failed to set version. Use format MAJOR.MINOR.PATCH ^(e.g. 3.1.0^)
     pause
@@ -139,7 +139,7 @@ if not exist "dist\AudioTooltip.exe" (
 REM ── 11. Copy additional release files ────────────────────────────────────────
 echo.
 echo [INFO] Copying release files...
-copy "cleanup.ps1"           "dist\" >nul
+copy "scripts\cleanup.ps1"   "dist\" >nul
 copy "installation-guide.md" "dist\" >nul
 echo [OK] Additional files copied.
 
