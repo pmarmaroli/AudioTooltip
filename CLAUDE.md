@@ -68,3 +68,6 @@ There are no automated tests. Manual testing uses the included `resources/test_a
 ## Platform Constraint
 
 This application is Windows-only. All file paths, hotkey handling, and system tray integration depend on Windows APIs.
+
+## Task Completion Reminder
+At the end of every task, remind the user what they originally asked for (one sentence: "You asked me to: …"). The user works across multiple terminals and needs this to stay oriented.
