@@ -113,15 +113,17 @@ foreach ($shortcut in $startMenuPaths) {
     }
 }
 
-# Try to remove the executable if it exists in current directory
+# Try to remove the executable and its _internal folder (one-folder build)
 $currentDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$exePath = Join-Path $currentDir "AudioTooltip.exe"
-if (Test-Path $exePath) {
-    try {
-        Remove-Item $exePath -Force
-        Write-Host "[OK] Removed AudioTooltip.exe" -ForegroundColor Green
-    } catch {
-        Write-Host "[!!] AudioTooltip.exe could not be removed (may be in use). Please delete manually." -ForegroundColor Yellow
+foreach ($name in @("AudioTooltip.exe", "_internal")) {
+    $target = Join-Path $currentDir $name
+    if (Test-Path $target) {
+        try {
+            Remove-Item $target -Recurse -Force
+            Write-Host "[OK] Removed $name" -ForegroundColor Green
+        } catch {
+            Write-Host "[!!] $name could not be removed (may be in use). Please delete manually." -ForegroundColor Yellow
+        }
     }
 }
 

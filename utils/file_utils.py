@@ -16,7 +16,8 @@ logger = logging.getLogger("FileUtils")
 # Common audio file extensions
 AUDIO_EXTENSIONS: Set[str] = {
     '.mp3', '.wav', '.flac', '.m4a', '.ogg', '.wma',
-    '.aac', '.aiff', '.mp4', '.ape', '.opus', '.wv'
+    '.aac', '.aiff', '.aif', '.mp4', '.ape', '.opus', '.wv',
+    '.au', '.bwf', '.rf64'
 }
 
 

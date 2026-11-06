@@ -95,20 +95,16 @@ if errorlevel 1 (
 echo [OK] Requirements installed.
 echo.
 
-REM ── 7. Install PyInstaller if not already present ────────────────────────────
-python -m pip show pyinstaller >nul 2>&1
+REM ── 7. Install or upgrade PyInstaller ────────────────────────────────────────
+REM PyInstaller 6.12 + setuptools >= 71 builds an exe that hangs on its splash
+REM screen (pkg_resources hook fails: "No module named 'backports'").
+python -m pip install "pyinstaller>=6.22" --upgrade --quiet
 if errorlevel 1 (
-    echo [INFO] PyInstaller not found — installing...
-    python -m pip install pyinstaller --quiet
-    if errorlevel 1 (
-        echo [ERROR] Failed to install PyInstaller.
-        pause
-        exit /b 1
-    )
-    echo [OK] PyInstaller installed.
-) else (
-    echo [OK] PyInstaller already present.
+    echo [ERROR] Failed to install PyInstaller.
+    pause
+    exit /b 1
 )
+echo [OK] PyInstaller ready.
 echo.
 
 REM ── 8. Clean previous build artifacts ────────────────────────────────────────
@@ -130,8 +126,8 @@ if errorlevel 1 (
 )
 
 REM ── 10. Verify output ────────────────────────────────────────────────────────
-if not exist "dist\AudioTooltip.exe" (
-    echo [ERROR] Build failed — AudioTooltip.exe not found in dist folder.
+if not exist "dist\AudioTooltip\AudioTooltip.exe" (
+    echo [ERROR] Build failed — AudioTooltip.exe not found in dist\AudioTooltip folder.
     pause
     exit /b 1
 )
@@ -139,8 +135,8 @@ if not exist "dist\AudioTooltip.exe" (
 REM ── 11. Copy additional release files ────────────────────────────────────────
 echo.
 echo [INFO] Copying release files...
-copy "scripts\cleanup.ps1"   "dist\" >nul
-copy "installation-guide.md" "dist\" >nul
+copy "scripts\cleanup.ps1"   "dist\AudioTooltip\" >nul
+copy "installation-guide.md" "dist\AudioTooltip\" >nul
 echo [OK] Additional files copied.
 
 REM ── Done ─────────────────────────────────────────────────────────────────────
@@ -149,12 +145,12 @@ echo ============================================
 echo  Build successful^^!  v!VERSION!
 echo ============================================
 echo.
-echo   dist\AudioTooltip.exe  ^<-- ready
-echo   dist\cleanup.ps1
-echo   dist\installation-guide.md
+echo   dist\AudioTooltip\AudioTooltip.exe  ^<-- ready
+echo   dist\AudioTooltip\cleanup.ps1
+echo   dist\AudioTooltip\installation-guide.md
 echo.
-echo Contents of dist folder:
-dir "dist" /b
+echo Contents of dist\AudioTooltip folder:
+dir "dist\AudioTooltip" /b
 echo.
 echo Next steps:
 echo   git add main.py

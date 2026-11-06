@@ -84,13 +84,13 @@ echo [OK] Version: v!VERSION!
 echo.
 
 REM ── 4. Verify dist folder contents ─────────────────────────────────────────
-if not exist "dist\AudioTooltip.exe" (
-    echo [ERROR] dist\AudioTooltip.exe not found.
+if not exist "dist\AudioTooltip\AudioTooltip.exe" (
+    echo [ERROR] dist\AudioTooltip\AudioTooltip.exe not found.
     echo         Run scripts\build_release.bat first.
     pause
     exit /b 1
 )
-echo [OK] dist\AudioTooltip.exe found.
+echo [OK] dist\AudioTooltip\AudioTooltip.exe found.
 echo.
 
 REM ── 5. Create zip archive ──────────────────────────────────────────────────
@@ -98,7 +98,7 @@ set ZIP_NAME=AudioTooltip-v!VERSION!.zip
 if exist "dist\!ZIP_NAME!" del "dist\!ZIP_NAME!"
 
 echo [INFO] Creating !ZIP_NAME!...
-powershell -NoProfile -Command "Compress-Archive -Path 'dist\AudioTooltip.exe','dist\cleanup.ps1','dist\installation-guide.md' -DestinationPath 'dist\!ZIP_NAME!' -Force"
+powershell -NoProfile -Command "Compress-Archive -Path 'dist\AudioTooltip' -DestinationPath 'dist\!ZIP_NAME!' -Force"
 if errorlevel 1 (
     echo [ERROR] Failed to create zip archive.
     pause

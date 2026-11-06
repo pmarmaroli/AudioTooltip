@@ -1,32 +1,28 @@
 """
-Enhanced Audio Analyzer Module
-------------------------------
-Core functionality for audio file analysis with improved performance and error handling.
+Audio Analyzer Module
+---------------------
+Core functionality for audio file analysis: decoding, statistics, visualizations
+and optional Azure speech transcription.
+
+Heavy libraries (librosa, PyAV, Azure SDK) are imported on first use so the
+tray icon appears quickly at Windows login.
 """
 
-# fmt: off
 import os
 import io
 import time
 import logging
 import traceback
 import tempfile
-from pathlib import Path
-from typing import Tuple, Dict, Optional, Union, Any, BinaryIO
+from collections import Counter
+from typing import Optional, Dict, Any
 
 import numpy as np
-import librosa
-import librosa.display
 import soundfile as sf
-import scipy.signal as signal
 import matplotlib
-matplotlib.use('Agg')  # Set the non-GUI backend before importing pyplot
-import matplotlib.pyplot as plt
-from matplotlib import rcParams
-import matplotlib.gridspec as gridspec
-# fmt: on
+matplotlib.use('Agg')  # Non-GUI backend; figures are rendered to PNG buffers
+from matplotlib.figure import Figure
 
-# Optional imports with fallbacks
 try:
     import mutagen
     MUTAGEN_AVAILABLE = True
@@ -34,236 +30,194 @@ except ImportError:
     MUTAGEN_AVAILABLE = False
 
 try:
-    import azure.cognitiveservices.speech as speechsdk
-    AZURE_SPEECH_AVAILABLE = True
-except ImportError:
+    import importlib.util
+    AZURE_SPEECH_AVAILABLE = importlib.util.find_spec(
+        "azure.cognitiveservices.speech") is not None
+except (ImportError, ValueError):
     AZURE_SPEECH_AVAILABLE = False
 
 
-class AudioAnalyzer:
-    """
-    Enhanced audio analyzer with improved architecture, error handling, and performance.
+# Spectrogram-type views and the double waveform never process more than this,
+# even with "use whole signal": a 2 h file would otherwise need several GB of RAM.
+MAX_VIZ_SECONDS = 600
+# Stereo delay is estimated on the start of the file only.
+DELAY_WINDOW_SECONDS = 30
+# Peak-to-noise ratio of the GCC-PHAT curve below which the delay is flagged unreliable.
+DELAY_CONFIDENCE_MIN = 20.0
+# Number of min/max buckets drawn in a waveform.
+WAVEFORM_POINTS = 2000
+# Samples at or above this absolute level are counted as clipped.
+CLIP_LEVEL = 0.999
 
-    Features:
-    - Optimized audio file loading with format detection
-    - Multiple visualization types (waveform, spectrogram, mel-spectrogram, etc.)
-    - Optional transcription via Azure Speech Services
-    - Comprehensive caching system
-    - Smart error handling and recovery
-    """
+_BIT_DEPTHS = {
+    'PCM_S8': '8-bit', 'PCM_U8': '8-bit', 'PCM_16': '16-bit', 'PCM_24': '24-bit',
+    'PCM_32': '32-bit', 'FLOAT': '32-bit float', 'DOUBLE': '64-bit float',
+}
+
+
+class TranscriptionCancelled(Exception):
+    """Raised when the user cancels a running transcription."""
+
+
+def _librosa():
+    """Import librosa lazily (it pulls numba/llvmlite and takes seconds to load)."""
+    import librosa
+    import librosa.display  # noqa: F401 - registers librosa.display
+    return librosa
+
+
+def _png(fig: Figure, dpi: int = 100) -> io.BytesIO:
+    """Render a matplotlib Figure to a PNG buffer."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
+    buf.seek(0)
+    return buf
+
+
+class AudioAnalyzer:
+    """Audio analyzer with caching, streaming statistics and thread-safe plotting."""
 
     def __init__(self, settings=None):
-        """
-        Initialize the audio analyzer.
-
-        Args:
-            settings: Application settings object (optional)
-        """
         self.logger = logging.getLogger("AudioAnalyzer")
         self.settings = settings
         self.speech_config = None
         self.initialized = False
 
-        # Initialize caches with size limits
-        self.sr_cache = {}  # Sample rate cache
-        self.duration_cache = {}  # Duration cache
-        self.analysis_cache = {}  # Analysis results cache
-        self.max_cache_size = 20  # Maximum items in each cache
+        self.info_cache = {}       # (path, mtime, size) -> info dict
+        self.analysis_cache = {}   # path -> {mtime, "<ch>_full_analysis"}; transcription keys
+        self._delay_cache = {}     # (path, mtime) -> delay dict or None
+        self.max_cache_size = 20
 
-        # Default analysis parameters
         self.chunk_duration = 10.0  # Default preview duration in seconds
         self.spec_n_fft = 2048
         self.spec_hop_length = 512
 
-        # Configure matplotlib for non-interactive use
-        rcParams['figure.dpi'] = 100
-        rcParams['savefig.dpi'] = 150
-        rcParams['font.size'] = 10
-        plt.ioff()  # Turn off interactive mode
+        matplotlib.rcParams['figure.dpi'] = 100
+        matplotlib.rcParams['savefig.dpi'] = 150
+        matplotlib.rcParams['font.size'] = 10
 
         self.logger.info("AudioAnalyzer initialized")
 
+    def warm_up(self):
+        """Pre-import heavy libraries (called from a background thread after startup)."""
+        try:
+            _librosa()
+            self.logger.info("librosa pre-loaded")
+        except Exception as e:
+            self.logger.warning(f"librosa pre-load failed: {e}")
+
     def is_cache_valid(self, file_path: str) -> bool:
-        """
-        Check if cached analysis for a file is still valid.
-
-        Args:
-            file_path: Path to the audio file
-
-        Returns:
-            bool: True if cache is valid, False if file has been modified
-        """
-        # If file doesn't exist, cache is invalid
+        """Check if cached analysis for a file is still valid (file not modified)."""
         if not os.path.exists(file_path):
             return False
 
-        # Check if file has been modified since it was cached
         current_mtime = os.path.getmtime(file_path)
 
-        # If we don't have a stored modification time, cache is invalid
         if 'mtime' not in self.analysis_cache.get(file_path, {}):
-            # Initialize if needed
             if file_path not in self.analysis_cache:
                 self.analysis_cache[file_path] = {}
             self.analysis_cache[file_path]['mtime'] = current_mtime
             return False
 
-        # If modification time has changed, cache is invalid
         cached_mtime = self.analysis_cache[file_path]['mtime']
         if current_mtime > cached_mtime:
             self.logger.info(
                 f"File {file_path} has been modified since last analysis")
-            # Update the stored modification time
             self.analysis_cache[file_path]['mtime'] = current_mtime
             return False
 
-        # Cache is valid
         return True
 
-    def calculate_time_delay(self, file_path: str) -> Optional[float]:
-        """Calculate time delay between left and right channels using GCC-PHAT."""
+    # ------------------------------------------------------------------ #
+    # Stereo delay (GCC-PHAT)
+    # ------------------------------------------------------------------ #
+
+    def gcc_phat(self, s1: np.ndarray, s2: np.ndarray, fs: int,
+                 fmin: float = 0, fmax: float = 8000):
+        """
+        GCC-PHAT delay between two signals, restricted to the [fmin, fmax] band.
+
+        Returns:
+            (delay_ms, confidence): delay of the correlation peak and its
+            peak-to-noise ratio (peak / standard deviation of the curve).
+        """
+        from scipy.fft import next_fast_len
+
+        n = len(s1)
+        nfft = next_fast_len(2 * n)  # zero-padded: no circular wrap-around
+        X1 = np.fft.rfft(s1, nfft)
+        X2 = np.fft.rfft(s2, nfft)
+        Pxy = X1 * np.conj(X2)
+
+        freqs = np.fft.rfftfreq(nfft, 1.0 / fs)
+        band = (freqs >= fmin) & (freqs <= fmax)
+        mag = np.abs(Pxy)
+        R = np.zeros_like(Pxy)
+        keep = band & (mag > 1e-12)
+        R[keep] = Pxy[keep] / mag[keep]
+
+        g = np.fft.irfft(R, nfft)
+        # Reorder to lags -(n-1) .. (n-1)
+        g = np.concatenate((g[-(n - 1):], g[:n])) if n > 1 else g[:1]
+        lags = np.arange(-(n - 1), n)
+
+        peak = int(np.argmax(g))
+        std = float(np.std(g))
+        confidence = float(g[peak] / std) if std > 0 else 0.0
+        delay_ms = float(lags[peak]) / fs * 1000.0
+        return delay_ms, confidence
+
+    def calculate_time_delay(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Delay between the first two channels, measured on the first
+        DELAY_WINDOW_SECONDS. Cached per file (it does not depend on the
+        displayed channel).
+
+        Returns:
+            {"ms": float, "confidence": float, "reliable": bool} or None.
+        """
         try:
-            self.logger.debug(
-                f"Starting time delay calculation for {file_path}")
+            key = (file_path, os.path.getmtime(file_path))
+            if key in self._delay_cache:
+                return self._delay_cache[key]
 
-            # Check if this is a stereo file by loading a small sample
-            y_check, sr_check, _, num_channels = self.load_audio(
-                file_path, duration=0.1, all_channels=True)
+            y, sr, _, num_channels = self.load_audio(
+                file_path, duration=DELAY_WINDOW_SECONDS, all_channels=True)
+            result = None
+            if y is not None and num_channels >= 2 and len(y) > 1:
+                left, right = y[:, 0], y[:, 1]
+                if np.max(np.abs(left)) > 1e-8 and np.max(np.abs(right)) > 1e-8:
+                    delay_ms, confidence = self.gcc_phat(left, right, sr)
+                    result = {
+                        "ms": delay_ms,
+                        "confidence": confidence,
+                        "reliable": confidence >= DELAY_CONFIDENCE_MIN,
+                    }
+                    self.logger.info(
+                        f"Time delay: {delay_ms:.3f} ms (confidence {confidence:.1f})")
 
-            self.logger.debug(f"File has {num_channels} channels")
-
-            if num_channels < 2:
-                self.logger.debug(
-                    f"Time delay calculation requires stereo audio, found {num_channels} channels")
-                return None
-
-            # Load both channels
-            self.logger.debug("Loading full audio for time delay calculation")
-            y, sr, _, _ = self.load_audio(file_path, all_channels=True)
-
-            if y is None or sr is None:
-                self.logger.error(
-                    "Failed to load audio for time delay calculation")
-                return None
-
-            self.logger.debug(
-                f"Audio loaded successfully: shape={y.shape}, sr={sr}")
-
-            # Extract the channels
-            left_channel = y[:, 0]
-            right_channel = y[:, 1]
-
-            self.logger.debug("Computing cross-correlation")
-            (G, axe_spl, axe_ms) = self.GCCPHAT(
-                left_channel, right_channel, sr, 1)
-
-            # Find the peak of the cross-correlation
-            peak_index = np.argmax(G)
-            delay_ms = axe_ms[peak_index]
-
-            self.logger.info(
-                f"Successfully calculated time delay: {delay_ms:.2f} ms")
-            return delay_ms
+            self._delay_cache[key] = result
+            return result
 
         except Exception as e:
             self.logger.error(f"Error calculating time delay: {e}")
             self.logger.error(traceback.format_exc())
             return None
 
-    def MYFFT(self, a):
-        if isinstance(a, list):
-            myfft = np.fft.fft(a)
-        else:
-            myfft = np.fft.fftn(a)
-
-        return myfft
-
-    def MYIFFT(self, a):
-        if isinstance(a, list):
-            myifft = np.fft.ifft(a)
-        else:
-            myifft = np.fft.ifftn(a)
-
-        return myifft
-
-    def COLORE(self, sigin, fs, fmin, fmax, mode):
-        # FFT-based filter
-        # if mode = 1 -> bandpass between fmin and fmax, if mode = 0 -> bandcut between fmin and fmax
-
-        siginFFT = self.MYFFT(sigin)
-        nfft = len(siginFFT)
-
-        vfc_pos = np.linspace(0, fs/2, (int)(nfft/2+1))
-        vfc_neg = -np.flipud(vfc_pos[1:len(vfc_pos)-1])
-        vfc = np.concatenate((vfc_pos, vfc_neg))
-
-        indFreqInBand = np.where(
-            (((vfc >= fmin) & (vfc <= fmax)) | ((vfc <= -fmin) & (vfc >= -fmax))))
-        indFreqOutBand = np.where(
-            (((vfc < fmin) & (vfc > -fmin)) | ((vfc < -fmax) | (vfc > fmax))))
-
-        absS = np.abs(siginFFT)
-
-        if (mode == 1):
-            absS[indFreqOutBand] = 0
-        else:
-            absS[indFreqInBand] = 0
-
-        sigout = np.real(self.MYIFFT(np.multiply(
-            absS, np.exp(np.multiply(1j, np.angle(siginFFT))))))
-
-        return sigout
-
-    def GCCPHAT(self, s1, s2, fs, norm, fmin=0, fmax=8000):
-        s1c = self.COLORE(s1, fs, fmin, fmax, 1)
-        s2c = self.COLORE(s2, fs, fmin, fmax, 1)
-
-        # Use FFTs of the filtered signals (do not overwrite them accidentally)
-        f_s1 = self.MYFFT(s1c)
-        f_s2 = self.MYFFT(s2c)
-
-        Pxy = f_s1 * np.conj(f_s2)
-
-        if (norm == 1):
-            denom = np.abs(Pxy)
-            denom[denom < 1e-6] = 1e-6
-        else:
-            denom = 1
-
-        # This line is the only difference between GCC-PHAT and normal cross correlation
-        G = np.fft.fftshift(np.real(self.MYIFFT(Pxy / denom)))
-        G = G / np.max(np.abs(G))
-
-        x = np.array([i for i in range(G.shape[0])])
-        axe_spl = x - G.shape[0]/2
-        axe_ms = axe_spl/fs*1000
-
-        return G, axe_spl, axe_ms
+    # ------------------------------------------------------------------ #
+    # Setup
+    # ------------------------------------------------------------------ #
 
     def initialize(self) -> bool:
-        """
-        Fully initialize the analyzer with settings.
-
-        Returns:
-            bool: True if initialization was successful
-        """
+        """Fully initialize the analyzer with settings."""
         if self.initialized:
             return True
 
         try:
             self.logger.info("Initializing audio analyzer")
-
-            # Load settings if available
             if self.settings:
                 self.chunk_duration = float(
                     self.settings.value("preview_duration", "10.0"))
-                self.logger.info(
-                    f"Set preview duration to {self.chunk_duration}s")
-
-                # Initialize speech services if enabled
-                if self.settings.value("enable_transcription", "false") == "true":
-                    self.initialize_speech_services()
-
             self.initialized = True
             return True
 
@@ -272,139 +226,29 @@ class AudioAnalyzer:
             self.logger.error(traceback.format_exc())
             return False
 
-    # Add this method to the AudioAnalyzer class in core/audio_analyzer.py
-
-    def generate_double_waveform(self, file_path: str) -> Optional[io.BytesIO]:
-        """
-        Generate double waveform visualization for stereo audio files.
-        Left channel (0) is shown in red for positive values.
-        Right channel (1) is shown in blue for negative values.
-
-        Args:
-            file_path: Path to the stereo audio file
-
-        Returns:
-            BytesIO buffer containing the visualization image or None on error
-        """
-        try:
-            # Check if this is a stereo file by loading a small sample
-            y_check, sr_check, _, num_channels = self.load_audio(
-                file_path, duration=0.1, all_channels=True)
-
-            if num_channels < 2:
-                self.logger.warning(
-                    f"Double waveform requires stereo audio, but found {num_channels} channels")
-                return None
-
-            # Close any existing figures
-            plt.close('all')
-
-            # Load both channels
-            y, sr, _, _ = self.load_audio(file_path, all_channels=True)
-
-            if y is None or sr is None:
-                self.logger.error("Failed to load audio for double waveform")
-                return None
-
-            # Extract the channels
-            left_channel = y[:, 0]
-            right_channel = y[:, 1]
-
-            # Create figure
-            fig = plt.figure(figsize=(10, 4), facecolor='white')
-            ax = fig.add_subplot(111)
-
-            # Optimize data for display
-            max_points = 10000
-            if len(left_channel) > max_points:
-                decimation_factor = len(left_channel) // max_points
-                left_decimated = left_channel[::decimation_factor]
-                right_decimated = right_channel[::decimation_factor]
-                time_decimated = np.linspace(
-                    0, len(left_channel) / sr, len(left_decimated))
-            else:
-                left_decimated = left_channel
-                right_decimated = right_channel
-                time_decimated = np.linspace(
-                    0, len(left_channel) / sr, len(left_channel))
-
-            # Only plot positive values for left channel (in red)
-            left_positive = left_decimated.copy()
-            left_positive[left_positive < 0] = 0
-
-            # Only plot negative values for right channel (in blue)
-            right_negative = right_decimated.copy()
-            right_negative[right_negative > 0] = 0
-
-            # Plot with custom styling
-            ax.fill_between(time_decimated, left_positive, 0,
-                            color='#e74c3c', alpha=0.7, label='Left Channel (positive)')
-            ax.fill_between(time_decimated, right_negative, 0,
-                            color='#3498db', alpha=0.7, label='Right Channel (negative)')
-
-            ax.set_title('Double Waveform - Stereo Channels', fontsize=12)
-            ax.set_xlabel('Time (s)', fontsize=10)
-            ax.set_ylabel('Amplitude', fontsize=10)
-            ax.set_ylim(-1.1, 1.1)
-            ax.grid(True, linestyle='--', alpha=0.7, color='#cccccc')
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-            ax.legend(loc='upper right', framealpha=0.9)
-
-            # Add a horizontal line at zero
-            ax.axhline(y=0, color='#888888', linestyle='-', linewidth=0.8)
-
-            plt.tight_layout()
-
-            # Save to buffer
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-            plt.close(fig)
-            buf.seek(0)
-
-            return buf
-
-        except Exception as e:
-            self.logger.error(f"Error generating double waveform: {e}")
-            self.logger.error(traceback.format_exc())
-            return None
-
     def initialize_speech_services(self) -> bool:
-        """
-        Initialize Azure Speech services with improved error handling.
-
-        Returns:
-            bool: True if speech services were successfully initialized
-        """
+        """Create the Azure speech config from settings. Returns True on success."""
         if not AZURE_SPEECH_AVAILABLE:
             self.logger.warning("Azure Speech Services package not installed")
             return False
 
         if not self.settings:
-            self.logger.warning("Settings not available for speech services")
             return False
 
-        # Check if transcription is enabled
-        transcription_enabled = self.settings.value(
-            "enable_transcription", "false") == "true"
-        if not transcription_enabled:
+        if self.settings.value("enable_transcription", "false") != "true":
             self.logger.info("Speech transcription is disabled in settings")
             return False
 
-        # Get credentials with fallback to environment variables
         azure_key = self.settings.value("azure_key", "")
         azure_region = self.settings.value("azure_region", "")
-
         if not azure_key or not azure_region:
             self.logger.warning("Azure credentials not found in settings")
             return False
 
         try:
-            # Initialize the speech config
+            import azure.cognitiveservices.speech as speechsdk
             self.speech_config = speechsdk.SpeechConfig(
-                subscription=azure_key,
-                region=azure_region
-            )
+                subscription=azure_key, region=azure_region)
             self.logger.info(
                 f"Speech services initialized with region: {azure_region}")
             return True
@@ -413,190 +257,140 @@ class AudioAnalyzer:
             self.logger.error(traceback.format_exc())
             return False
 
-    def load_audio(self, audio_path: str, duration: Optional[float] = None, channel: int = 0, all_channels: bool = False) -> Tuple[Optional[np.ndarray], Optional[int], Optional[float], Optional[int]]:
+    # ------------------------------------------------------------------ #
+    # Decoding
+    # ------------------------------------------------------------------ #
+
+    def get_audio_info(self, file_path: str) -> Optional[Dict[str, Any]]:
         """
-        Load audio with optimized memory usage and error handling.
+        Basic stream information without decoding the whole file.
+        Uses soundfile (WAV/FLAC/MP3/OGG/AIFF...) and falls back to PyAV
+        (bundled FFmpeg: M4A/AAC/WMA/MP4/APE/WavPack/Opus...).
+        """
+        try:
+            stat = os.stat(file_path)
+        except OSError as e:
+            self.logger.error(f"Cannot stat {file_path}: {e}")
+            return None
+
+        key = (file_path, stat.st_mtime, stat.st_size)
+        if key in self.info_cache:
+            return self.info_cache[key]
+
+        info = None
+        try:
+            sfi = sf.info(file_path)
+            info = {
+                "sr": sfi.samplerate, "channels": sfi.channels,
+                "duration": sfi.duration, "frames": sfi.frames,
+                "subtype": sfi.subtype, "decoder": "sf",
+            }
+        except Exception as sf_e:
+            self.logger.debug(f"soundfile cannot read {file_path}: {sf_e}")
+            try:
+                info = self._av_info(file_path)
+            except Exception as av_e:
+                self.logger.error(f"Unsupported or unreadable audio: {av_e}")
+
+        if info:
+            self.info_cache[key] = info
+        return info
+
+    def _av_info(self, file_path: str) -> Dict[str, Any]:
+        import av
+        with av.open(file_path) as container:
+            stream = container.streams.audio[0]
+            sr = stream.codec_context.sample_rate
+            channels = stream.codec_context.channels
+            if stream.duration is not None and stream.time_base is not None:
+                duration = float(stream.duration * stream.time_base)
+            elif container.duration is not None:
+                duration = container.duration / 1_000_000
+            else:
+                duration = 0.0
+            return {
+                "sr": sr, "channels": channels, "duration": duration,
+                "frames": int(duration * sr),
+                "subtype": stream.codec_context.name.upper(), "decoder": "av",
+            }
+
+    def _av_decode(self, file_path: str, max_seconds: Optional[float] = None):
+        """Decode with PyAV to float32 array of shape (frames, channels)."""
+        import av
+        with av.open(file_path) as container:
+            stream = container.streams.audio[0]
+            sr = stream.codec_context.sample_rate
+            channels = stream.codec_context.channels
+            resampler = av.AudioResampler(
+                format='fltp', layout=stream.codec_context.layout.name, rate=sr)
+            limit = int(max_seconds * sr) if max_seconds else None
+            chunks, total = [], 0
+            for frame in container.decode(stream):
+                for out in resampler.resample(frame):
+                    arr = out.to_ndarray()  # (channels, samples)
+                    chunks.append(arr)
+                    total += arr.shape[1]
+                if limit is not None and total >= limit:
+                    break
+
+        if chunks:
+            y = np.concatenate(chunks, axis=1).T
+        else:
+            y = np.zeros((0, channels), dtype=np.float32)
+        if limit is not None:
+            y = y[:limit]
+        return np.ascontiguousarray(y, dtype=np.float32), sr
+
+    def load_audio(self, audio_path: str, duration: Optional[float] = None,
+                   channel: int = 0, all_channels: bool = False):
+        """
+        Load audio as float32.
 
         Args:
-            audio_path: Path to the audio file
-            duration: Maximum duration to load in seconds (uses chunk_duration if None)
-            channel: Channel to load (0 for left/mono, 1 for right, etc.)
-            all_channels: If True, load all channels as multi-dimensional array
+            duration: seconds to load from the start (-1 = whole file,
+                      None = preview duration)
+            channel: channel to return when all_channels is False
+            all_channels: return shape (frames, channels) instead of one channel
 
         Returns:
-            Tuple of (audio_data, sample_rate, total_duration, num_channels) or (None, None, None, None) on error
+            (audio_data, sample_rate, total_duration, num_channels), or
+            (None, None, None, None) on error.
         """
         if duration is None:
             duration = self.chunk_duration
 
         start_time = time.time()
-        self.logger.info(
-            f"Loading audio file: {audio_path}, channel: {channel if not all_channels else 'all'}")
-
         try:
-            # Validate file
-            if not os.path.exists(audio_path):
-                self.logger.error(f"File not found: {audio_path}")
+            info = self.get_audio_info(audio_path)
+            if info is None:
                 return None, None, None, None
 
-            # Get file information
-            file_size = os.path.getsize(audio_path)
-            if file_size == 0:
-                self.logger.error(f"File is empty: {audio_path}")
-                return None, None, None, None
-
-            self.logger.debug(f"File size: {file_size/1024:.1f} KB")
-
-            # Check cache for sample rate
-            target_sr = None
-            if audio_path in self.sr_cache:
-                target_sr = self.sr_cache[audio_path]
-                self.logger.debug(f"Using cached sample rate: {target_sr}")
-
-            # Get file information
-            try:
-                info = sf.info(audio_path)
-                num_channels = info.channels
-
-                if target_sr is None:
-                    target_sr = info.samplerate
-                    self.sr_cache[audio_path] = target_sr
-
-                # Get total duration using cached value or soundfile
-                if audio_path in self.duration_cache:
-                    total_duration = self.duration_cache[audio_path]
-                else:
-                    total_duration = info.duration
-                    self.duration_cache[audio_path] = total_duration
-
-                self.logger.debug(
-                    f"Audio info - SR: {target_sr}Hz, Duration: {total_duration:.2f}s, Channels: {info.channels}")
-
-            except Exception as info_e:
-                self.logger.warning(
-                    f"Could not get audio info with soundfile: {info_e}")
-                # Fallback to librosa for getting info
-                try:
-                    duration_raw = librosa.get_duration(path=audio_path)
-                    total_duration = float(duration_raw)
-                    self.duration_cache[audio_path] = total_duration
-
-                    # Try to get channel info
-                    try:
-                        y, sr = librosa.load(
-                            audio_path, sr=None, mono=False, duration=0.1)
-                        num_channels = y.shape[0] if len(y.shape) > 1 else 1
-                    except Exception:
-                        num_channels = 1
-
-                    if target_sr is None:
-                        # Use a standard sample rate as fallback
-                        target_sr = 44100
-                        self.sr_cache[audio_path] = target_sr
-
-                    self.logger.debug(
-                        f"Using librosa fallback - SR: {target_sr}Hz, Duration: {total_duration:.2f}s, Channels: {num_channels}")
-
-                except Exception as e:
-                    self.logger.error(f"Failed to get audio info: {e}")
-                    return None, None, None, None
-
-            # Validate requested channel if not loading all channels
+            num_channels = info["channels"]
             if not all_channels and channel >= num_channels:
                 self.logger.error(
                     f"Requested channel {channel} exceeds available channels ({num_channels})")
                 return None, None, None, None
 
-            # For initial preview, load only first few seconds
-            preview_duration = min(
-                duration, total_duration) if duration != -1 else total_duration
-            self.logger.debug(f"Loading {preview_duration:.2f}s preview")
+            seconds = None if duration == -1 or duration >= info["duration"] else duration
 
-            # Use soundfile for faster loading
-            try:
-                with sf.SoundFile(audio_path) as sf_file:
-                    frames_to_read = int(
-                        preview_duration * sf_file.samplerate) if preview_duration != total_duration else -1
-                    y = sf_file.read(frames_to_read)
-
-                    # Handle multi-channel audio based on all_channels flag
-                    if len(y.shape) > 1:
-                        if not all_channels:
-                            if channel < y.shape[1]:
-                                y = y[:, channel]  # Extract requested channel
-                            else:
-                                self.logger.warning(
-                                    f"Channel {channel} not available, using first channel")
-                                y = y[:, 0]
-                        # else: keep all channels intact
-
-                    # Resample if needed
-                    if sf_file.samplerate != target_sr:
-                        if all_channels and len(y.shape) > 1:
-                            # Resample multi-channel data correctly: compute new frame count
-                            orig_frames = y.shape[0]
-                            num_channels = y.shape[1]
-                            new_len = int(orig_frames * target_sr / sf_file.samplerate)
-                            # Allocate with shape (new_frames, num_channels)
-                            y_resampled = np.zeros((new_len, num_channels), dtype=y.dtype)
-                            for ch in range(num_channels):
-                                y_resampled[:, ch] = librosa.resample(
-                                    y[:, ch], orig_sr=sf_file.samplerate, target_sr=target_sr)
-                            y = y_resampled
-                        else:
-                            y = librosa.resample(
-                                y, orig_sr=sf_file.samplerate, target_sr=target_sr)
-
-                    actual_sr = target_sr
-            except Exception as sf_e:
-                self.logger.warning(
-                    f"Soundfile loading failed, trying librosa: {sf_e}")
-
-                # Fallback to librosa
+            y = None
+            sr = info["sr"]
+            if info["decoder"] == "sf":
                 try:
-                    if duration == -1:
-                        y, actual_sr = librosa.load(
-                            audio_path,
-                            sr=target_sr,
-                            mono=not all_channels  # Keep channels if all_channels is True
-                        )
-                    else:
-                        y, actual_sr = librosa.load(
-                            audio_path,
-                            sr=target_sr,
-                            offset=0,
-                            duration=preview_duration,
-                            mono=not all_channels  # Keep channels if all_channels is True
-                        )
+                    with sf.SoundFile(audio_path) as f:
+                        frames = -1 if seconds is None else int(seconds * f.samplerate)
+                        y = f.read(frames, dtype='float32', always_2d=True)
+                except Exception as sf_e:
+                    self.logger.warning(f"soundfile read failed, trying PyAV: {sf_e}")
+            if y is None:
+                y, sr = self._av_decode(audio_path, seconds)
 
-                    # librosa returns multi-channel arrays as (channels, frames) when mono=False.
-                    # Normalize the shape so that all-channel data is (frames, channels).
-                    if isinstance(y, np.ndarray) and y.ndim > 1:
-                        if not all_channels:
-                            # We requested a single channel: librosa returns (channels, frames)
-                            # Pick the requested channel (or first available) which is y[channel]
-                            if channel < y.shape[0]:
-                                y = y[channel]
-                            else:
-                                self.logger.warning(f"Channel {channel} not available from librosa, using channel 0")
-                                y = y[0]
-                        else:
-                            # all_channels=True: transpose to (frames, channels)
-                            if y.shape[0] != 0:
-                                y = y.T
-                except Exception as e:
-                    self.logger.error(f"All audio loading methods failed: {e}")
-                    self.logger.error(traceback.format_exc())
-                    return None, None, None, None
+            if not all_channels:
+                y = y[:, channel]
 
-            # Manage caches to prevent memory leaks
-            self._maintain_cache_size()
-
-            end_time = time.time()
             self.logger.info(
-                f"Audio loaded in {end_time - start_time:.2f}s - Shape: {y.shape}, SR: {actual_sr}Hz")
-
-            return y, actual_sr, total_duration, num_channels
+                f"Audio loaded in {time.time() - start_time:.2f}s - Shape: {y.shape}, SR: {sr}Hz")
+            return y, sr, info["duration"], num_channels
 
         except Exception as e:
             self.logger.error(f"Unexpected error loading audio: {e}")
@@ -604,576 +398,373 @@ class AudioAnalyzer:
             return None, None, None, None
 
     def _maintain_cache_size(self):
-        """Prevent cache from growing too large"""
-        for cache, name in [
-            (self.sr_cache, "sample rate"),
-            (self.duration_cache, "duration"),
-            (self.analysis_cache, "analysis")
-        ]:
-            if len(cache) > self.max_cache_size:
-                # Remove oldest items (assuming keys were added in order)
-                items_to_remove = len(cache) - self.max_cache_size
-                keys_to_remove = list(cache.keys())[:items_to_remove]
-                for key in keys_to_remove:
+        """Prevent caches from growing too large (oldest entries dropped first)."""
+        for cache in (self.info_cache, self.analysis_cache, self._delay_cache):
+            excess = len(cache) - self.max_cache_size
+            if excess > 0:
+                for key in list(cache.keys())[:excess]:
                     del cache[key]
-                self.logger.debug(
-                    f"Cleaned {name} cache: removed {items_to_remove} items")
 
-    def get_audio_metadata(self, file_path: str, total_duration: Optional[float] = None) -> str:
+    # ------------------------------------------------------------------ #
+    # Waveform envelope and level statistics
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _accumulate(x: np.ndarray, bucket: int, acc: Dict[str, Any]):
+        """Add one block of samples to the min/max envelope and level stats."""
+        if len(x) == 0:
+            return
+        ax = np.abs(x)
+        acc["peak"] = max(acc["peak"], float(ax.max()))
+        acc["clipped"] += int(np.count_nonzero(ax >= CLIP_LEVEL))
+        full = len(x) // bucket * bucket
+        if full:
+            r = x[:full].reshape(-1, bucket)
+            acc["mins"].append(r.min(axis=1))
+            acc["maxs"].append(r.max(axis=1))
+        if full < len(x):
+            acc["mins"].append(np.array([x[full:].min()]))
+            acc["maxs"].append(np.array([x[full:].max()]))
+
+    @staticmethod
+    def _finish(acc: Dict[str, Any]):
+        mins = np.concatenate(acc["mins"]) if acc["mins"] else np.zeros(1)
+        maxs = np.concatenate(acc["maxs"]) if acc["maxs"] else np.zeros(1)
+        return mins, maxs, acc["peak"], acc["clipped"]
+
+    def _scan_channel(self, file_path: str, channel: int, info: Dict[str, Any]):
         """
-        Extract metadata with improved error handling.
-
-        Args:
-            file_path: Path to the audio file
-            total_duration: Optional pre-calculated duration
-
-        Returns:
-            str: Formatted metadata as a string
+        One pass over a channel: min/max envelope, peak level and clipped
+        sample count. Streams soundfile-readable files in blocks (constant
+        memory); other formats are decoded in full.
         """
+        acc = {"mins": [], "maxs": [], "peak": 0.0, "clipped": 0}
+
+        if info["decoder"] == "sf":
+            bucket = max(1, info["frames"] // WAVEFORM_POINTS)
+            blocksize = bucket * 64
+            for block in sf.blocks(file_path, blocksize=blocksize,
+                                   dtype='float32', always_2d=True):
+                self._accumulate(block[:, channel], bucket, acc)
+        else:
+            y, _, _, _ = self.load_audio(file_path, duration=-1, channel=channel)
+            if y is None:
+                return None
+            bucket = max(1, len(y) // WAVEFORM_POINTS)
+            self._accumulate(y, bucket, acc)
+
+        return self._finish(acc)
+
+    def _envelope(self, y: np.ndarray):
+        acc = {"mins": [], "maxs": [], "peak": 0.0, "clipped": 0}
+        self._accumulate(y, max(1, len(y) // WAVEFORM_POINTS), acc)
+        mins, maxs, _, _ = self._finish(acc)
+        return mins, maxs
+
+    def _plot_envelope(self, mins, maxs, duration: float, title: str = 'Waveform'):
+        fig = Figure(figsize=(10, 2.5), facecolor='white')
+        ax = fig.add_subplot(111)
+        t = np.linspace(0, duration, len(maxs))
+        if np.array_equal(mins, maxs):
+            ax.plot(t, maxs, color='#3465a4', linewidth=1)
+        else:
+            ax.fill_between(t, mins, maxs, color='#3465a4', linewidth=0.5)
+        ax.set_title(title, fontsize=12)
+        ax.set_xlabel('Time (s)', fontsize=10)
+        ax.set_ylabel('Amplitude', fontsize=10)
+        ax.set_ylim(-1.1, 1.1)
+        ax.grid(True, linestyle='--', alpha=0.7, color='#cccccc')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        fig.tight_layout()
+        return _png(fig)
+
+    # ------------------------------------------------------------------ #
+    # Metadata
+    # ------------------------------------------------------------------ #
+
+    def get_audio_metadata(self, file_path: str, info: Dict[str, Any], channel: int = 0,
+                           peak: Optional[float] = None, clipped: Optional[int] = None) -> str:
+        """Format metadata and level statistics as display text."""
         try:
-            self.logger.info(f"Starting metadata extraction for: {file_path}")
+            total = int(info["duration"])
+            hours, rem = divmod(total, 3600)
+            minutes, seconds = divmod(rem, 60)
+            duration_str = (f"{hours}:{minutes:02d}:{seconds:02d}" if hours
+                            else f"{minutes}:{seconds:02d}")
 
-            # If duration not provided, try to get it
-            if total_duration is None:
-                self.logger.debug(
-                    "Duration not provided, attempting to retrieve")
-                if file_path in self.duration_cache:
-                    total_duration = self.duration_cache[file_path]
-                    self.logger.debug(
-                        f"Using cached duration: {total_duration}s")
-                else:
-                    try:
-                        total_duration = librosa.get_duration(path=file_path)
-                        self.logger.debug(
-                            f"Calculated duration: {total_duration}s")
-                    except Exception as e:
-                        self.logger.warning(f"Could not get duration: {e}")
-                        total_duration = 0
-                        self.logger.debug("Setting duration to 0 as fallback")
+            lines = [f"Duration: {duration_str}", f"Sample Rate: {info['sr']} Hz"]
 
-            # Format duration
-            minutes = int(total_duration // 60)
-            seconds = int(total_duration % 60)
-            duration_str = f"{minutes}:{seconds:02d}"
-            self.logger.debug(f"Formatted duration: {duration_str}")
+            channels_line = f"Channels: {info['channels']}"
+            if info["channels"] > 1:
+                channels_line += f" (showing channel {channel + 1})"
+            lines.append(channels_line)
 
-            # Get sample rate
-            sample_rate = None
-            if file_path in self.sr_cache:
-                sample_rate = self.sr_cache[file_path]
-                self.logger.debug(
-                    f"Using cached sample rate: {sample_rate} Hz")
-            else:
-                self.logger.debug(
-                    "Sample rate not in cache, attempting to retrieve")
-                try:
-                    info = sf.info(file_path)
-                    sample_rate = info.samplerate
-                    self.sr_cache[file_path] = sample_rate
-                    self.logger.debug(
-                        f"Retrieved sample rate via soundfile: {sample_rate} Hz")
-                except Exception as sf_e:
-                    self.logger.warning(
-                        f"Could not get sample rate with soundfile: {sf_e}")
-                    # Fallback
-                    try:
-                        y, sr = librosa.load(file_path, sr=None, duration=0.1)
-                        sample_rate = sr
-                        self.sr_cache[file_path] = sample_rate
-                        self.logger.debug(
-                            f"Retrieved sample rate via librosa: {sample_rate} Hz")
-                    except Exception as e:
-                        self.logger.warning(f"Could not get sample rate: {e}")
-
-            # Collect all metadata
-            self.logger.debug("Building metadata information list")
-            info = [f"Duration: {duration_str}"]
-
-            if sample_rate:
-                info.append(f"Sample Rate: {sample_rate} Hz")
-
-            # Try to get additional metadata
-            num_channels = None
-            self.logger.debug(
-                "Attempting to retrieve additional metadata via mutagen")
+            bit_depth = _BIT_DEPTHS.get(info["subtype"])
+            audio = None
             if MUTAGEN_AVAILABLE:
                 try:
-                    audio = mutagen.File(file_path)
-                    if audio:
-                        self.logger.debug(
-                            f"Mutagen loaded file successfully: {type(audio)}")
-                        if hasattr(audio.info, 'channels'):
-                            num_channels = audio.info.channels
-                            info.append(f"Channels: {num_channels}")
-                            self.logger.debug(f"Found {num_channels} channels")
-                        else:
-                            self.logger.debug(
-                                "No channel information available in mutagen")
-
-                        if hasattr(audio.info, 'bitrate'):
-                            info.append(
-                                f"Bitrate: {audio.info.bitrate // 1000} kbps")
-
-                        # Extract any available tags
-                        tags = []
-                        if hasattr(audio, 'tags') and audio.tags:
-                            self.logger.debug("Extracting tags from mutagen")
-                            for key in ['title', 'artist', 'album', 'date', 'genre']:
-                                if key in audio.tags:
-                                    tags.append(
-                                        f"{key.capitalize()}: {audio.tags[key][0]}")
-
-                        # MP3 specific
-                        if hasattr(audio, 'ID3') and audio.ID3:
-                            self.logger.debug("Extracting ID3 tags")
-                            for frame in audio.ID3.values():
-                                if frame.FrameID == 'TXXX':
-                                    tags.append(
-                                        f"{frame.desc}: {frame.text[0]}")
-
-                        # Add non-empty tags
-                        if tags:
-                            self.logger.debug(
-                                f"Adding {len(tags)} metadata tags")
-                            info.extend(tags)
-                    else:
-                        self.logger.debug(
-                            "Mutagen could not parse file format")
+                    audio = mutagen.File(file_path, easy=True)
                 except Exception as e:
-                    self.logger.warning(
-                        f"Error reading metadata with mutagen: {e}")
-                    info.append("Additional metadata unavailable")
-            else:
-                self.logger.debug("Mutagen not available")
-                info.append(
-                    "Detailed metadata unavailable (mutagen not installed)")
+                    self.logger.warning(f"mutagen could not read tags: {e}")
+            if not bit_depth and audio is not None:
+                bits = getattr(audio.info, 'bits_per_sample', 0)
+                if bits:
+                    bit_depth = f"{bits}-bit"
+            lines.append(f"Format: {info['subtype']}" +
+                         (f" ({bit_depth})" if bit_depth else ""))
 
-            # If num_channels is still None, try to get it from soundfile
-            if num_channels is None:
-                self.logger.debug(
-                    "Channels not found in mutagen, trying alternative methods")
-                try:
-                    sf_info = sf.info(file_path)
-                    num_channels = sf_info.channels
-                    if "Channels:" not in ''.join(info):  # Avoid duplication
-                        info.append(f"Channels: {num_channels}")
-                    self.logger.debug(
-                        f"Found {num_channels} channels via soundfile")
-                except Exception as e:
-                    self.logger.warning(
-                        f"Could not get channel info from soundfile: {e}")
-                    # One more fallback
-                    try:
-                        y_check, _, _, chans = self.load_audio(
-                            file_path, duration=0.1, all_channels=True)
-                        if chans is not None:
-                            num_channels = chans
-                            # Avoid duplication
-                            if "Channels:" not in ''.join(info):
-                                info.append(f"Channels: {num_channels}")
-                            self.logger.debug(
-                                f"Found {num_channels} channels via load_audio")
-                    except Exception as e:
-                        self.logger.warning(f"Could not get channel info: {e}")
+            if audio is not None:
+                bitrate = getattr(audio.info, 'bitrate', 0)
+                if bitrate:
+                    lines.append(f"Bitrate: {int(bitrate) // 1000} kbps")
+                if audio.tags:
+                    for key in ['title', 'artist', 'album', 'date', 'genre']:
+                        try:
+                            value = audio.tags.get(key)
+                        except Exception:
+                            value = None
+                        if value:
+                            lines.append(f"{key.capitalize()}: {value[0]}")
 
-            # Get file information
-            self.logger.debug("Getting file system information")
-            try:
-                file_stat = os.stat(file_path)
-                file_size_mb = file_stat.st_size / (1024 * 1024)
-                mod_time = time.strftime(
-                    '%Y-%m-%d %H:%M:%S', time.localtime(file_stat.st_mtime))
+            if peak is not None:
+                peak_db = f"{round(20 * np.log10(peak), 1) + 0.0} dBFS" if peak > 0 else "-inf dBFS (silence)"
+                lines.append(f"Peak: {peak_db}")
+            if clipped is not None:
+                lines.append(f"Clipped samples (≥ {CLIP_LEVEL}): {clipped}")
 
-                info.append(f"File Size: {file_size_mb:.2f} MB")
-                info.append(f"Modified: {mod_time}")
-                self.logger.debug(
-                    f"File size: {file_size_mb:.2f} MB, Modified: {mod_time}")
-            except Exception as e:
-                self.logger.warning(f"Could not get file stats: {e}")
+            stat = os.stat(file_path)
+            lines.append(f"File Size: {stat.st_size / (1024 * 1024):.2f} MB")
+            lines.append("Modified: " + time.strftime(
+                '%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime)))
 
-            metadata = "\n".join(info)
-            self.logger.info(
-                f"Metadata extraction complete: {len(info)} fields")
-            self.logger.debug(f"Final metadata: {metadata}")
-            return metadata
+            return "\n".join(lines)
 
         except Exception as e:
             self.logger.error(f"Error in get_audio_metadata: {e}")
             self.logger.error(traceback.format_exc())
             return f"Error reading metadata: {str(e)}"
 
-    def transcribe_audio(self, audio_path: str, language: Optional[str] = None, channel: int = -1) -> str:
+    # ------------------------------------------------------------------ #
+    # Transcription
+    # ------------------------------------------------------------------ #
+
+    def transcribe_audio(self, audio_path: str, language: Optional[str] = None,
+                         channel: int = -1, should_cancel=None) -> str:
         """
-        Transcribe audio with language detection and error handling.
+        Transcribe audio with Azure Speech.
 
         Args:
-            audio_path: Path to the audio file
-            language: Optional specific language code
-            channel: Channel to transcribe (-1 for mono mix, 0 for left, 1 for right, etc.)
+            language: language code, or None/"" for auto-detection
+            channel: channel to transcribe (-1 = mono mix)
+            should_cancel: optional callable returning True to abort
 
         Returns:
-            str: Transcription result or error message
+            Formatted transcription text.
+
+        Raises:
+            RuntimeError: with a user-readable reason when transcription fails.
+            TranscriptionCancelled: when should_cancel() returned True.
         """
-
         if not AZURE_SPEECH_AVAILABLE:
-            return "Transcription unavailable - Azure Speech SDK not installed"
+            raise RuntimeError("Azure Speech SDK is not installed.")
+        if not self.settings or self.settings.value("enable_transcription", "false") != "true":
+            raise RuntimeError("Transcription is disabled. Enable it in Settings → Transcription.")
+        if self.speech_config is None and not self.initialize_speech_services():
+            raise RuntimeError(
+                "Azure credentials are not configured. Set them in Settings → Transcription.")
 
-        start_time = time.time()
-        self.logger.info(
-            f"Starting transcription for {audio_path}, channel: {channel}")
+        import azure.cognitiveservices.speech as speechsdk
+        import soxr
 
-        # First, check if transcription is enabled
-        transcription_enabled = False
-        if self.settings:
-            transcription_enabled = self.settings.value(
-                "enable_transcription", "false") == "true"
+        cache_key = f"transcription_{audio_path}_{language or 'auto'}_ch{channel}"
+        if cache_key in self.analysis_cache:
+            self.logger.info("Using cached transcription")
+            return self.analysis_cache[cache_key]
 
-        if not transcription_enabled:
-            self.logger.info("Transcription is disabled in settings")
-            return "Transcription is disabled in settings"
-
-        # Initialize speech services if needed
-        if self.speech_config is None:
-            if not self.initialize_speech_services():
-                self.logger.warning("Speech services not initialized")
-                return "Transcription unavailable - Azure credentials not configured"
-
-        temp_wav = None
-        speech_recognizer = None
-
-        try:
-            # Create a unique temp file path
-            temp_dir = tempfile.gettempdir()
-            unique_id = f"{int(time.time())}_{os.path.basename(audio_path)}_ch{channel}"
-            temp_wav = os.path.join(temp_dir, f"transcribe_{unique_id}.wav")
-            self.logger.debug(f"Temporary WAV file: {temp_wav}")
-
-            # Check for cached result
-            cache_key = f"transcription_{audio_path}_{language or 'auto'}_ch{channel}"
-            if cache_key in self.analysis_cache:
-                self.logger.info("Using cached transcription")
-                return self.analysis_cache[cache_key]
-
-            # Get duration based on transcription-specific settings
-            transcription_duration = self.settings.value(
-                "transcription_duration", "preview")
-
-            if transcription_duration == "preview":
-                # Use preview duration
-                use_whole_signal = self.settings.value(
-                    "use_whole_signal", "false") == "true"
-                if use_whole_signal:
-                    # If whole signal is enabled, use full file
-                    max_duration = None
-                else:
-                    try:
-                        max_duration = float(self.settings.value(
-                            "preview_duration", "10.0"))
-                    except (ValueError, TypeError):
-                        max_duration = 10.0
-            elif transcription_duration == "60":
-                # Use fixed 60 seconds
-                max_duration = 60.0
-            elif transcription_duration == "full":
-                # Use the entire file
-                max_duration = None  # No limit
+        transcription_duration = self.settings.value("transcription_duration", "preview")
+        if transcription_duration == "preview":
+            if self.settings.value("use_whole_signal", "false") == "true":
+                max_duration = -1
             else:
-                # Default fallback
-                max_duration = 30.0
-
-            self.logger.debug(
-                f"Transcription duration set to: {transcription_duration}, loading {max_duration if max_duration else 'all'} seconds")
-
-            y, sr = None, None
-            self.logger.info(
-                f"Attempting to load audio with librosa: max_duration={max_duration}")
-            try:
-                # Handle channel selection for librosa
-                if channel >= 0:
-                    # Load specific channel (non-mono)
-                    if max_duration is None:
-                        y_multi, sr = librosa.load(
-                            audio_path, sr=None, mono=False, duration=None)
-                        self.logger.info(
-                            f"Loaded FULL audio (channel mode): Total duration = {y_multi.shape[1]/sr:.2f} seconds")
-                    else:
-                        y_multi, sr = librosa.load(
-                            audio_path, sr=None, mono=False, duration=max_duration)
-                        self.logger.info(
-                            f"Loaded LIMITED audio (channel mode): Duration = {y_multi.shape[1]/sr:.2f} seconds (limit was {max_duration}s)")
-
-                    # Check if requested channel exists
-                    if len(y_multi.shape) > 1 and channel < y_multi.shape[0]:
-                        y = y_multi[channel]
-                    else:
-                        self.logger.warning(
-                            f"Channel {channel} not available, defaulting to channel 0")
-                        y = y_multi[0] if len(y_multi.shape) > 1 else y_multi
-                else:
-                    # Load as mono mix (default)
-                    if max_duration is None:
-                        y, sr = librosa.load(
-                            audio_path, sr=None, mono=True, duration=None)
-                        self.logger.info(
-                            f"Loaded FULL audio (mono mode): Total duration = {len(y)/sr:.2f} seconds")
-                    else:
-                        y, sr = librosa.load(
-                            audio_path, sr=None, mono=True, duration=max_duration)
-                        self.logger.info(
-                            f"Loaded LIMITED audio (mono mode): Duration = {len(y)/sr:.2f} seconds (limit was {max_duration}s)")
-
-            except Exception as load_e:
-                self.logger.warning(f"LibROSA loading failed: {load_e}")
                 try:
-                    # Fallback to soundfile
-                    self.logger.info(
-                        f"Attempting soundfile fallback with max_duration={max_duration}")
-                    with sf.SoundFile(audio_path) as f:
-                        self.logger.info(
-                            f"SoundFile info: frames={f.frames}, sr={f.samplerate}, duration={f.frames/f.samplerate:.2f}s, channels={f.channels}")
+                    max_duration = float(self.settings.value("preview_duration", "10.0"))
+                except (ValueError, TypeError):
+                    max_duration = 10.0
+        elif transcription_duration == "60":
+            max_duration = 60.0
+        elif transcription_duration == "full":
+            max_duration = -1
+        else:
+            max_duration = 30.0
 
-                        if max_duration is None:
-                            # Read all frames
-                            self.logger.info(
-                                f"Reading ALL frames ({f.frames}) from soundfile")
-                            data = f.read()
-                            self.logger.info(
-                                f"Read complete file: {len(data)/f.samplerate:.2f}s of audio")
-                        else:
-                            max_frames = int(f.samplerate * max_duration)
-                            self.logger.info(
-                                f"Reading LIMITED frames: {max_frames}/{f.frames} from soundfile")
-                            data = f.read(max_frames)
-                            self.logger.info(
-                                f"Read partial file: {len(data)/f.samplerate:.2f}s of audio")
+        y, sr, _, num_channels = self.load_audio(
+            audio_path, duration=max_duration, all_channels=True)
+        if y is None or len(y) == 0:
+            raise RuntimeError("Could not read the audio file.")
 
-                        sr = f.samplerate
-                        self.logger.info(f"Loaded data shape: {data.shape}")
+        x = y[:, channel] if 0 <= channel < num_channels else y.mean(axis=1)
+        if sr != 16000:  # Azure expects 16 kHz mono 16-bit PCM
+            x = soxr.resample(x, sr, 16000)
+        seconds = len(x) / 16000
 
-                        # Handle channel selection for soundfile
-                        if len(data.shape) > 1:  # Multi-channel
-                            self.logger.info(
-                                f"Multi-channel audio: {data.shape[1]} channels detected")
-                            if channel >= 0 and channel < data.shape[1]:
-                                # Extract specific channel
-                                self.logger.info(
-                                    f"Extracting channel {channel}")
-                                y = data[:, channel]
-                            else:
-                                # Default to mono mix
-                                self.logger.info(
-                                    f"Creating mono mix from {data.shape[1]} channels")
-                                y = np.mean(data, axis=1)
-                        else:
-                            # Already mono
-                            self.logger.info("Already mono audio, using as is")
-                            y = data
+        fd, temp_wav = tempfile.mkstemp(prefix="audiotooltip_", suffix=".wav")
+        os.close(fd)
+        speech_recognizer = None
+        audio_config = None
+        try:
+            sf.write(temp_wav, x, 16000, subtype='PCM_16')
 
-                        self.logger.info(
-                            f"Final audio for transcription: {len(y)/sr:.2f}s, {len(y)} samples at {sr}Hz")
-
-                except Exception as sf_e:
-                    self.logger.error(f"All loading methods failed: {sf_e}")
-                    return "Failed to load audio for transcription"
-
-            if y is None or sr is None:
-                self.logger.error("Failed to load audio data")
-                return "Failed to load audio data for transcription"
-
-            # Write to temporary WAV file
-            self.logger.debug(
-                f"Writing temporary WAV with {len(y)} samples at {sr}Hz")
-            sf.write(temp_wav, y, sr, format='WAV')
-
-            # Configure language detection or specific language
             if language:
-                self.logger.info(f"Using specified language: {language}")
                 self.speech_config.speech_recognition_language = language
                 auto_detect_config = None
             else:
-                self.logger.info("Using auto language detection")
-                # Limit to 4 languages since the error mentioned 4 max in DetectAudioAtStart mode
+                # DetectAudioAtStart mode accepts at most 4 candidate languages
                 auto_detect_config = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(
-                    languages=["en-US", "fr-FR", "de-DE", "es-ES"]
-                )
+                    languages=["en-US", "fr-FR", "de-DE", "es-ES"])
 
-            # Create speech recognizer
             audio_config = speechsdk.AudioConfig(filename=temp_wav)
-
+            kwargs = {"speech_config": self.speech_config, "audio_config": audio_config}
             if auto_detect_config:
-                speech_recognizer = speechsdk.SpeechRecognizer(
-                    speech_config=self.speech_config,
-                    audio_config=audio_config,
-                    auto_detect_source_language_config=auto_detect_config
-                )
-            else:
-                speech_recognizer = speechsdk.SpeechRecognizer(
-                    speech_config=self.speech_config,
-                    audio_config=audio_config
-                )
+                kwargs["auto_detect_source_language_config"] = auto_detect_config
+            speech_recognizer = speechsdk.SpeechRecognizer(**kwargs)
 
-            # Continuous recognition implementation
-            self.logger.info("Starting continuous recognition")
-            transcript_segments = []
-            done = False
-
-            def stop_cb(evt):
-                nonlocal done
-                self.logger.info("Recognition stopped")
-                done = True
+            segments, detected = [], []
+            state = {"done": False, "error": None}
 
             def recognized_cb(evt):
-                nonlocal transcript_segments
                 if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
-                    segment_text = evt.result.text
-                    transcript_segments.append(segment_text)
-                    self.logger.info(
-                        f"Recognized segment ({len(segment_text)} chars): {segment_text}")
+                    segments.append(evt.result.text)
+                    if auto_detect_config:
+                        try:
+                            lang = speechsdk.AutoDetectSourceLanguageResult(evt.result).language
+                            if lang:
+                                detected.append(lang)
+                        except Exception:
+                            pass
 
-            # Connect callbacks
+            def canceled_cb(evt):
+                details = evt.cancellation_details
+                if details.reason == speechsdk.CancellationReason.Error:
+                    state["error"] = details.error_details or str(details.reason)
+                state["done"] = True
+
+            def stopped_cb(evt):
+                state["done"] = True
+
             speech_recognizer.recognized.connect(recognized_cb)
-            speech_recognizer.session_stopped.connect(stop_cb)
-            speech_recognizer.canceled.connect(stop_cb)
+            speech_recognizer.canceled.connect(canceled_cb)
+            speech_recognizer.session_stopped.connect(stopped_cb)
 
-            # Start continuous recognition
             speech_recognizer.start_continuous_recognition()
 
-            # Wait for completion (with timeout)
-            start_time_recognition = time.time()
-            timeout = 300  # 5 minutes timeout
-            self.logger.info(
-                f"Waiting for recognition to complete (timeout: {timeout}s)")
-            while not done and time.time() - start_time_recognition < timeout:
-                time.sleep(0.5)
+            timeout = max(300.0, seconds * 1.5 + 60)
+            started = time.time()
+            cancelled = timed_out = False
+            while not state["done"]:
+                if should_cancel and should_cancel():
+                    cancelled = True
+                    break
+                if time.time() - started > timeout:
+                    timed_out = True
+                    break
+                time.sleep(0.2)
 
-            # Stop recognition
             speech_recognizer.stop_continuous_recognition()
 
-            # Join all recognized text
-            full_transcript = " ".join(transcript_segments)
-            self.logger.info(
-                f"Full transcription complete: {len(full_transcript)} chars")
+            if cancelled:
+                raise TranscriptionCancelled()
+            if state["error"]:
+                raise RuntimeError(f"Azure Speech error: {state['error']}")
 
-            # Get language (from first segment if available)
-            detected_language = "unknown"
-            try:
-                if hasattr(speech_recognizer, 'properties'):
-                    # Check if properties has a get method
-                    if hasattr(speech_recognizer.properties, 'get'):
-                        detected_language = speech_recognizer.properties.get(
-                            speechsdk.PropertyId.SpeechServiceConnection_RecoLanguage, "unknown")
-                    # If no get method, try dictionary-style access
-                    elif len(transcript_segments) > 0:
-                        # Try to get from the first result if available
-                        detected_language = "auto-detected"
-            except Exception as e:
-                self.logger.warning(f"Could not get detected language: {e}")
-                detected_language = "unknown"
+            text = " ".join(segments).strip()
+            if not text:
+                raise RuntimeError("No speech detected in the selected audio.")
 
-            # Format result
-            channel_info = "mono mix" if channel < 0 else f"channel {channel+1}"
-            output = f"Language: {detected_language}\nChannel: {channel_info}\nTranscript: {full_transcript}"
-
-            # Cache result
-            if len(self.analysis_cache) < self.max_cache_size:
+            detected_language = language or (
+                Counter(detected).most_common(1)[0][0] if detected else "unknown")
+            channel_info = "mono mix" if channel < 0 else f"channel {channel + 1}"
+            output = (f"Language: {detected_language}\nChannel: {channel_info}\n"
+                      f"Transcript: {text}")
+            if timed_out:
+                output += f"\n\n[Stopped after {int(timeout)} s timeout — transcript is incomplete]"
+            elif len(self.analysis_cache) < self.max_cache_size:
                 self.analysis_cache[cache_key] = output
-
-            elapsed = time.time() - start_time
-            self.logger.info(f"Transcription completed in {elapsed:.2f}s")
             return output
 
-        except Exception as e:
-            self.logger.error(f"Error in transcription: {e}")
-            self.logger.error(traceback.format_exc())
-            return f"Transcription error: {str(e)}"
         finally:
-            # Clean up resources
-            if speech_recognizer:
-                speech_recognizer = None
+            speech_recognizer = None
+            audio_config = None
+            try:
+                os.unlink(temp_wav)
+            except OSError as e:
+                self.logger.warning(f"Could not delete temp file {temp_wav}: {e}")
 
-            # Clean up temp file
-            if temp_wav and os.path.exists(temp_wav):
-                try:
-                    os.unlink(temp_wav)
-                except Exception as e:
-                    self.logger.warning(
-                        f"Could not delete temp file {temp_wav}: {e}")
+    # ------------------------------------------------------------------ #
+    # Overview analysis
+    # ------------------------------------------------------------------ #
 
-    def process_audio_file(self, file_path: str, channel: int = 0, run_transcription: bool = False, force_refresh: bool = False) -> Optional[Tuple[str, str, io.BytesIO, Dict, str, int, Optional[float]]]:
+    def process_audio_file(self, file_path: str, channel: int = 0,
+                           run_transcription: bool = False, force_refresh: bool = False):
         """
-        Process audio file with comprehensive analysis and caching.
-
-        Args:
-            file_path: Path to the audio file
-            channel: Channel to process (0 for left/mono, 1 for right, etc.)
-            run_transcription: Whether to run transcription immediately
-            force_refresh: Whether to force recalculation even if cache exists
+        Overview analysis of one channel: metadata, level stats, waveform of
+        the whole file and stereo delay.
 
         Returns:
-            Tuple of (file_path, metadata, visualization_buffer, transcription, num_channels, channel, time_delay)
-            or None on error
+            (file_path, metadata, waveform_buffer, transcription, num_channels,
+             channel, time_delay) or None on error.
         """
         start_time = time.time()
         self.logger.info(
             f"Processing audio file: {file_path}, channel: {channel}, force_refresh: {force_refresh}")
 
         try:
-            # Check cache first - only if not forcing refresh
             cache_key = f"{channel}_full_analysis"
-
-            if not force_refresh and file_path in self.analysis_cache and cache_key in self.analysis_cache[file_path] and self.is_cache_valid(file_path):
-                self.logger.info(
-                    f"Using cached analysis for {file_path}, channel {channel}")
+            if (not force_refresh and file_path in self.analysis_cache
+                    and cache_key in self.analysis_cache[file_path]
+                    and self.is_cache_valid(file_path)):
+                self.logger.info(f"Using cached analysis for {file_path}, channel {channel}")
                 return self.analysis_cache[file_path][cache_key]
 
-            # Load audio with error handling
-            y, sr, total_duration, num_channels = self.load_audio(
-                file_path, duration=-1, channel=channel)
-            if y is None:
-                self.logger.error("Failed to load audio")
+            if force_refresh:
+                self.clear_cache(file_path)
+
+            info = self.get_audio_info(file_path)
+            if info is None:
+                return None
+            if channel >= info["channels"]:
+                self.logger.error(f"Channel {channel} not available")
                 return None
 
-            # Generate metadata
-            metadata = self.get_audio_metadata(file_path, total_duration)
+            scan = self._scan_channel(file_path, channel, info)
+            if scan is None:
+                return None
+            mins, maxs, peak, clipped = scan
 
-            # Add channels info to metadata
-            if num_channels > 1:
-                metadata += f"\nChannels: {num_channels} (showing channel {channel+1})"
+            viz_buffer = self._plot_envelope(mins, maxs, info["duration"])
+            metadata = self.get_audio_metadata(file_path, info, channel, peak, clipped)
 
-            # Generate only waveform visualization for overview tab
-            viz_buffer = self.generate_waveform(y, sr)
-
-            # Calculate time delay for stereo files
             time_delay = None
-            if num_channels > 1:
-                try:
-                    time_delay = self.calculate_time_delay(file_path)
-                    self.logger.info(f"Calculated time delay: {time_delay}")
-                except Exception as e:
-                    self.logger.error(f"Error calculating time delay: {e}")
+            if info["channels"] > 1:
+                time_delay = self.calculate_time_delay(file_path)
 
-            # Transcription only if explicitly requested
             transcription = None
-            if run_transcription and self.settings and self.settings.value("enable_transcription", "false") == "true":
-                transcription = self.transcribe_audio(file_path)
+            if run_transcription:
+                try:
+                    transcription = self.transcribe_audio(file_path)
+                except Exception as e:
+                    self.logger.warning(f"Transcription skipped: {e}")
 
-            # Prepare result with time delay
             result = (file_path, metadata, viz_buffer, transcription,
-                      num_channels, channel, time_delay)
+                      info["channels"], channel, time_delay)
 
-            # Store current modification time with cache
             if file_path not in self.analysis_cache:
                 self.analysis_cache[file_path] = {}
-            self.analysis_cache[file_path]['mtime'] = os.path.getmtime(
-                file_path)
+            self.analysis_cache[file_path]['mtime'] = os.path.getmtime(file_path)
+            self.analysis_cache[file_path][cache_key] = result
+            self._maintain_cache_size()
 
-            # Cache result if not too large
-            if viz_buffer is None or viz_buffer.getbuffer().nbytes < 5*1024*1024:  # 5MB limit
-                self.analysis_cache[file_path][cache_key] = result
-
-            elapsed = time.time() - start_time
-            self.logger.info(f"Audio processing completed in {elapsed:.2f}s")
-
+            self.logger.info(f"Audio processing completed in {time.time() - start_time:.2f}s")
             return result
 
         except Exception as e:
@@ -1181,177 +772,117 @@ class AudioAnalyzer:
             self.logger.error(traceback.format_exc())
             return None
 
-    def set_spectrogram_params(self, n_fft: int = 2048, hop_length: int = 512, figure_size: Tuple[int, int] = (10, 5)):
-        """
-        Configure spectrogram generation parameters.
-
-        Args:
-            n_fft: FFT window size
-            hop_length: Hop length between frames
-            figure_size: Matplotlib figure size
-        """
+    def set_spectrogram_params(self, n_fft: int = 2048, hop_length: int = 512, figure_size=(10, 5)):
+        """Configure spectrogram generation parameters."""
         self.spec_n_fft = n_fft
         self.spec_hop_length = hop_length
         self.spec_figure_size = figure_size
-        self.logger.debug(
-            f"Set spectrogram params: n_fft={n_fft}, hop_length={hop_length}")
 
     def clear_cache(self, file_path: Optional[str] = None):
-        """
-        Clear analysis cache for a specific file or all files.
-
-        Args:
-            file_path: Path to clear cache for, or None to clear all
-        """
+        """Clear caches for a specific file or all files."""
         if file_path:
-            # Clear specific file
-            if file_path in self.sr_cache:
-                del self.sr_cache[file_path]
-            if file_path in self.duration_cache:
-                del self.duration_cache[file_path]
-            if file_path in self.analysis_cache:
-                del self.analysis_cache[file_path]
-            self.logger.debug(f"Cleared cache for {file_path}")
+            for cache in (self.info_cache, self._delay_cache):
+                for key in [k for k in cache if k[0] == file_path]:
+                    del cache[key]
+            self.analysis_cache.pop(file_path, None)
         else:
-            # Clear all caches
-            self.sr_cache.clear()
-            self.duration_cache.clear()
+            self.info_cache.clear()
+            self._delay_cache.clear()
             self.analysis_cache.clear()
-            self.logger.info("Cleared all analysis caches")
 
     def get_cache_stats(self) -> Dict[str, int]:
-        """
-        Get statistics about current cache usage.
-
-        Returns:
-            Dictionary with cache statistics
-        """
+        """Get statistics about current cache usage."""
         return {
-            'sample_rate_cache': len(self.sr_cache),
-            'duration_cache': len(self.duration_cache),
+            'info_cache': len(self.info_cache),
+            'delay_cache': len(self._delay_cache),
             'analysis_cache': len(self.analysis_cache),
             'max_cache_size': self.max_cache_size
         }
 
+    # ------------------------------------------------------------------ #
+    # Visualizations (each builds its own Figure: safe across worker threads)
+    # ------------------------------------------------------------------ #
+
     def generate_waveform(self, y: np.ndarray, sr: int) -> Optional[io.BytesIO]:
+        """Waveform drawn as a min/max envelope so peaks and clipping stay visible."""
+        try:
+            mins, maxs = self._envelope(y)
+            return self._plot_envelope(mins, maxs, len(y) / sr)
+        except Exception as e:
+            self.logger.error(f"Error generating waveform: {e}")
+            self.logger.error(traceback.format_exc())
+            return None
+
+    def generate_double_waveform(self, file_path: str, duration: float = -1) -> Optional[io.BytesIO]:
         """
-        Generate optimized waveform visualization.
-
-        Args:
-            y: Audio data
-            sr: Sample rate
-
-        Returns:
-            BytesIO buffer containing the visualization image or None on error
+        Stereo view: left channel envelope above zero (red), right channel
+        envelope below zero (blue). Returns None for non-stereo files.
         """
         try:
-            # Close any existing figures
-            plt.close('all')
+            y, sr, _, num_channels = self.load_audio(
+                file_path, duration=duration, all_channels=True)
+            if y is None or num_channels < 2:
+                self.logger.warning(
+                    f"Double waveform requires stereo audio, found {num_channels} channels")
+                return None
 
-            # Create figure with appropriate size
-            fig = plt.figure(figsize=(10, 2.5), facecolor='white')
+            _, left_max = self._envelope(y[:, 0])
+            right_min, _ = self._envelope(y[:, 1])
+            left_pos = np.maximum(left_max, 0)
+            right_neg = np.minimum(right_min, 0)
+            t = np.linspace(0, len(y) / sr, len(left_pos))
 
-            # Optimize data for display
-            max_points = 10000
-            if len(y) > max_points:
-                decimation_factor = len(y) // max_points
-                y_decimated = y[::decimation_factor]
-                time_decimated = np.linspace(0, len(y) / sr, len(y_decimated))
-            else:
-                y_decimated = y
-                time_decimated = np.linspace(0, len(y) / sr, len(y))
-
-            # Plot with improved styling
+            fig = Figure(figsize=(10, 4), facecolor='white')
             ax = fig.add_subplot(111)
-            ax.plot(time_decimated, y_decimated, color='#3465a4', linewidth=1)
-            ax.set_title('Waveform', fontsize=12)
+            ax.fill_between(t, left_pos, 0, color='#e74c3c', alpha=0.7,
+                            label='Left Channel (positive)')
+            ax.fill_between(t, right_neg, 0, color='#3498db', alpha=0.7,
+                            label='Right Channel (negative)')
+            ax.set_title('Double Waveform - Stereo Channels', fontsize=12)
             ax.set_xlabel('Time (s)', fontsize=10)
             ax.set_ylabel('Amplitude', fontsize=10)
             ax.set_ylim(-1.1, 1.1)
             ax.grid(True, linestyle='--', alpha=0.7, color='#cccccc')
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
-
-            plt.tight_layout()
-
-            # Save to buffer
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-            plt.close(fig)
-            buf.seek(0)
-
-            return buf
+            ax.legend(loc='upper right', framealpha=0.9)
+            ax.axhline(y=0, color='#888888', linestyle='-', linewidth=0.8)
+            fig.tight_layout()
+            return _png(fig)
 
         except Exception as e:
-            self.logger.error(f"Error generating waveform: {e}")
+            self.logger.error(f"Error generating double waveform: {e}")
             self.logger.error(traceback.format_exc())
             return None
 
     def generate_spectrogram(self, y: np.ndarray, sr: int, high_quality: bool = False) -> Optional[io.BytesIO]:
-        """
-        Generate spectrogram with quality settings.
-
-        Args:
-            y: Audio data
-            sr: Sample rate
-            high_quality: Whether to use higher quality settings
-
-        Returns:
-            BytesIO buffer containing the visualization image or None on error
-        """
+        """Linear-frequency spectrogram in dB."""
         try:
-            plt.close('all')
-
-            # Adjust parameters based on quality setting
+            librosa = _librosa()
             if high_quality:
                 n_fft = min(4096, len(y))
-                hop_length = n_fft // 4
-                fig_size = (12, 6)
-                dpi = 150
+                hop_length = max(1, n_fft // 4)
+                fig_size, dpi = (12, 6), 150
             else:
                 n_fft = min(2048, len(y))
-                hop_length = n_fft // 2
-                fig_size = (10, 5)
-                dpi = 100
+                hop_length = max(1, n_fft // 2)
+                fig_size, dpi = (10, 5), 100
 
-            # Create figure
-            fig = plt.figure(figsize=fig_size, facecolor='white')
-
-            # Create custom grid layout
-            gs = plt.GridSpec(1, 2, width_ratios=[20, 1])
-
-            # Generate spectrogram data
             D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length)
             S_db = librosa.amplitude_to_db(np.abs(D), ref=np.max)
 
-            # Plot spectrogram
+            fig = Figure(figsize=fig_size, facecolor='white')
+            gs = fig.add_gridspec(1, 2, width_ratios=[20, 1])
             ax = fig.add_subplot(gs[0])
             img = librosa.display.specshow(
-                S_db,
-                sr=sr,
-                hop_length=hop_length,
-                x_axis='time',
-                y_axis='hz',
-                cmap='jet',
-                ax=ax
-            )
+                S_db, sr=sr, hop_length=hop_length, x_axis='time', y_axis='hz',
+                cmap='jet', ax=ax)
             ax.set_title('Spectrogram', fontsize=12)
             ax.set_xlabel('Time (s)', fontsize=10)
             ax.set_ylabel('Frequency (Hz)', fontsize=10)
-
-            # Add colorbar
-            cax = fig.add_subplot(gs[1])
-            plt.colorbar(img, cax=cax, format='%+2.0f dB')
-
-            plt.tight_layout()
-
-            # Save figure to buffer
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
-            plt.close(fig)
-            buf.seek(0)
-
-            return buf
+            fig.colorbar(img, cax=fig.add_subplot(gs[1]), format='%+2.0f dB')
+            fig.tight_layout()
+            return _png(fig, dpi=dpi)
 
         except Exception as e:
             self.logger.error(f"Error generating spectrogram: {e}")
@@ -1359,42 +890,20 @@ class AudioAnalyzer:
             return None
 
     def generate_mel_spectrogram(self, y: np.ndarray, sr: int) -> Optional[io.BytesIO]:
-        """
-        Generate mel spectrogram visualization.
-
-        Args:
-            y: Audio data
-            sr: Sample rate
-
-        Returns:
-            BytesIO buffer containing the visualization image or None on error
-        """
+        """Mel spectrogram in dB."""
         try:
-            plt.close('all')
-
-            # Create figure
-            fig = plt.figure(figsize=(10, 5), facecolor='white')
-
-            # Calculate mel spectrogram
-            S = librosa.feature.melspectrogram(
-                y=y, sr=sr, n_mels=128, fmax=8000)
+            librosa = _librosa()
+            S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128, fmax=8000)
             S_dB = librosa.power_to_db(S, ref=np.max)
 
-            # Plot
-            ax = plt.subplot(111)
+            fig = Figure(figsize=(10, 5), facecolor='white')
+            ax = fig.add_subplot(111)
             img = librosa.display.specshow(
                 S_dB, x_axis='time', y_axis='mel', sr=sr, fmax=8000, ax=ax)
-            plt.colorbar(img, format='%+2.0f dB')
-            plt.title('Mel Spectrogram')
-            plt.tight_layout()
-
-            # Save to buffer
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-            plt.close(fig)
-            buf.seek(0)
-
-            return buf
+            fig.colorbar(img, ax=ax, format='%+2.0f dB')
+            ax.set_title('Mel Spectrogram')
+            fig.tight_layout()
+            return _png(fig)
 
         except Exception as e:
             self.logger.error(f"Error generating mel spectrogram: {e}")
@@ -1402,181 +911,22 @@ class AudioAnalyzer:
             return None
 
     def generate_chromagram(self, y: np.ndarray, sr: int) -> Optional[io.BytesIO]:
-        """
-        Generate chromagram for tonal content analysis.
-
-        Args:
-            y: Audio data
-            sr: Sample rate
-
-        Returns:
-            BytesIO buffer containing the visualization image or None on error
-        """
+        """Chromagram of the harmonic part (pitch class content)."""
         try:
-            plt.close('all')
-
-            # Compute chromagram
-            # Use harmonic separation to focus on tonal content
+            librosa = _librosa()
             y_harmonic = librosa.effects.harmonic(y)
             chroma = librosa.feature.chroma_cqt(y=y_harmonic, sr=sr)
 
-            # Create plot
-            fig = plt.figure(figsize=(10, 4), facecolor='white')
-            ax = plt.subplot(111)
+            fig = Figure(figsize=(10, 4), facecolor='white')
+            ax = fig.add_subplot(111)
             img = librosa.display.specshow(
-                chroma,
-                y_axis='chroma',
-                x_axis='time',
-                ax=ax,
-                cmap='coolwarm'
-            )
-            plt.colorbar(img)
-            plt.title('Chromagram (Pitch Class Content)')
-            plt.tight_layout()
-
-            # Save to buffer
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-            plt.close(fig)
-            buf.seek(0)
-
-            return buf
+                chroma, y_axis='chroma', x_axis='time', ax=ax, cmap='coolwarm')
+            fig.colorbar(img, ax=ax)
+            ax.set_title('Chromagram (Pitch Class Content)')
+            fig.tight_layout()
+            return _png(fig)
 
         except Exception as e:
             self.logger.error(f"Error generating chromagram: {e}")
-            self.logger.error(traceback.format_exc())
-            return None
-
-    def generate_visualizations(self, y: np.ndarray, sr: int, file_path: str, quality: str = 'normal', channel: int = 0) -> Optional[io.BytesIO]:
-        """
-        Generate combined visualizations with progress updates.
-
-        Args:
-            y: Audio data
-            sr: Sample rate
-            file_path: Path to the audio file (for caching)
-            quality: Visualization quality ('normal' or 'high')
-            channel: Channel number (for caching)
-
-        Returns:
-            BytesIO buffer containing the visualization image or None on error
-        """
-        start_time = time.time()
-        self.logger.info(
-            f"Generating visualizations for {file_path}, channel {channel}")
-
-        try:
-            # Check if visualization in cache
-            cache_key = f"{file_path}_{channel}_{quality}"
-            if cache_key in self.analysis_cache:
-                self.logger.info("Using cached visualizations")
-                return self.analysis_cache[cache_key].get('visualizations')
-
-            # Close any existing plots
-            plt.close('all')
-
-            # Create multi-panel figure
-            fig = plt.figure(figsize=(12, 8), facecolor='white')
-
-            # Configure grid layout - waveform on top, spectrogram below
-            gs = plt.GridSpec(2, 1, height_ratios=[1, 2], hspace=0.3)
-
-            # Generate and plot waveform
-            waveform_start = time.time()
-            self.logger.debug("Generating waveform...")
-
-            # Optimize display by decimating
-            max_points = 10000
-            if len(y) > max_points:
-                decimation_factor = len(y) // max_points
-                y_decimated = y[::decimation_factor]
-                time_decimated = np.linspace(0, len(y) / sr, len(y_decimated))
-            else:
-                y_decimated = y
-                time_decimated = np.linspace(0, len(y) / sr, len(y))
-
-            # Plot waveform
-            ax0 = fig.add_subplot(gs[0])
-            ax0.plot(time_decimated, y_decimated, color='#3465a4', linewidth=1)
-            channel_label = f"Channel {channel+1}" if channel > 0 else "Left/Mono Channel"
-            ax0.set_title(f'Waveform - {channel_label}', fontsize=12)
-            ax0.set_xlabel('Time (s)', fontsize=10)
-            ax0.set_ylabel('Amplitude', fontsize=10)
-            ax0.set_ylim(-1.1, 1.1)
-            ax0.grid(True, linestyle='--', alpha=0.7, color='#cccccc')
-            ax0.spines['top'].set_visible(False)
-            ax0.spines['right'].set_visible(False)
-
-            waveform_time = time.time() - waveform_start
-            self.logger.debug(f"Waveform generated in {waveform_time:.2f}s")
-
-            # Generate spectrogram subplot with separate colorbar
-            spec_start = time.time()
-            self.logger.debug("Generating spectrogram...")
-
-            # Create nested GridSpec for spectrogram and colorbar
-            gs1 = gridspec.GridSpecFromSubplotSpec(
-                1, 2, subplot_spec=gs[1], width_ratios=[20, 1])
-            ax1 = fig.add_subplot(gs1[0])
-
-            # Configure spectrogram quality
-            if quality == 'high':
-                n_fft = min(4096, len(y))
-                hop_length = n_fft // 4
-            else:
-                n_fft = min(2048, len(y))
-                hop_length = n_fft // 2
-
-            # Calculate spectrogram
-            D = librosa.stft(y, n_fft=n_fft, hop_length=hop_length)
-            S_db = librosa.amplitude_to_db(np.abs(D), ref=np.max)
-
-            # Plot spectrogram
-            img = librosa.display.specshow(
-                S_db,
-                sr=sr,
-                hop_length=hop_length,
-                x_axis='time',
-                y_axis='log',
-                ax=ax1,
-                cmap='viridis'
-            )
-            ax1.set_title(f'Spectrogram - {channel_label}', fontsize=12)
-            ax1.set_xlabel('Time (s)', fontsize=10)
-            ax1.set_ylabel('Frequency (Hz)', fontsize=10)
-
-            # Add colorbar
-            cax = fig.add_subplot(gs1[1])
-            plt.colorbar(img, cax=cax, format='%+2.0f dB')
-
-            spec_time = time.time() - spec_start
-            self.logger.debug(f"Spectrogram generated in {spec_time:.2f}s")
-
-            # Final layout adjustments
-            plt.tight_layout()
-
-            # Save to buffer
-            save_start = time.time()
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-            plt.close(fig)
-            buf.seek(0)
-
-            save_time = time.time() - save_start
-            self.logger.debug(f"Visualization saved in {save_time:.2f}s")
-
-            total_time = time.time() - start_time
-            self.logger.info(f"Visualizations generated in {total_time:.2f}s")
-
-            # Cache result
-            if len(self.analysis_cache) < self.max_cache_size:
-                if cache_key not in self.analysis_cache:
-                    self.analysis_cache[cache_key] = {}
-                self.analysis_cache[cache_key]['visualizations'] = buf
-
-            return buf
-
-        except Exception as e:
-            self.logger.error(f"Error generating visualizations: {e}")
             self.logger.error(traceback.format_exc())
             return None

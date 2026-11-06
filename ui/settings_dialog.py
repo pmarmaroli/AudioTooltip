@@ -25,6 +25,20 @@ import winreg
 from utils.startup_utils import StartupManager
 
 
+# (label, Azure language code); "" = auto-detect among en-US, fr-FR, de-DE, es-ES
+TRANSCRIPTION_LANGUAGES = [
+    ("Auto-detect (EN/FR/DE/ES)", ""),
+    ("English (US)", "en-US"),
+    ("English (UK)", "en-GB"),
+    ("Spanish", "es-ES"),
+    ("French", "fr-FR"),
+    ("German", "de-DE"),
+    ("Italian", "it-IT"),
+    ("Japanese", "ja-JP"),
+    ("Chinese", "zh-CN"),
+]
+
+
 class SettingsDialog(QDialog):
     """
     Settings dialog with multiple configuration categories.
@@ -270,18 +284,7 @@ class SettingsDialog(QDialog):
             self.azure_region_combo.addItem(region)
 
         self.language_combo = QComboBox()
-        languages = [
-            ("Auto-detect", ""),
-            ("English (US)", "en-US"),
-            ("English (UK)", "en-GB"),
-            ("Spanish", "es-ES"),
-            ("French", "fr-FR"),
-            ("German", "de-DE"),
-            ("Italian", "it-IT"),
-            ("Japanese", "ja-JP"),
-            ("Chinese", "zh-CN"),
-        ]
-        for label, code in languages:
+        for label, code in TRANSCRIPTION_LANGUAGES:
             self.language_combo.addItem(label, code)
 
         azure_layout.addRow("Subscription Key:", self.azure_key_edit)
@@ -466,7 +469,7 @@ class SettingsDialog(QDialog):
         self.auto_close_check.setChecked(
             self.settings.value("auto_close", "true") == "true")
         self.auto_close_time_spin.setValue(
-            int(self.settings.value("auto_close_time", "4")))
+            int(self.settings.value("auto_close_time", "10")))
 
         # Analysis settings
         self.preview_duration_spin.setValue(

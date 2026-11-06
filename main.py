@@ -13,14 +13,16 @@ from ui.progress_dialog import ProgressDialog
 from ui.settings_dialog import SettingsDialog
 from ui.tooltip import EnhancedTooltip
 from core.audio_playback import AudioPlayback
-from core.audio_analyzer import AudioAnalyzer
+from core.audio_analyzer import AudioAnalyzer, TranscriptionCancelled, MAX_VIZ_SECONDS
 import os
 import sys
 import time
 import threading
 import gc
+import logging
 import traceback
 import argparse
+import ctypes
 
 # Close PyInstaller native splash screen as early as possible
 try:
@@ -58,6 +60,20 @@ try:
     WINDOWS_API_AVAILABLE = True
 except ImportError:
     WINDOWS_API_AVAILABLE = False
+
+# Window classes of File Explorer windows
+EXPLORER_WINDOW_CLASSES = ("CabinetWClass", "ExploreWClass")
+GA_ROOT = 2  # GetAncestor flag: top-level window
+DROP_WINDOW_HOTKEY = "alt+shift+d"  # Alt+D is the address-bar shortcut in browsers and Explorer
+
+HELP_TEXT = (
+    "3 ways to analyze audio:\n\n"
+    "1) Select an audio file in File Explorer and press Alt+A\n"
+    "2) Select an audio file in File Explorer, then middle-click in that window\n"
+    "3) Press Alt+Shift+D to open the drop window and drag files onto it\n\n"
+    "Audio Tooltip runs in the system tray (hidden icons): right-click its icon "
+    "for recent files and settings."
+)
 
 
 class DropTargetWindow(QWidget):
@@ -154,6 +170,11 @@ class TranscriptionWorker(QThread):
         self.transcription_channel = transcription_channel
         self.language = language
         self.logger = get_module_logger("TranscriptionWorker")
+        self._cancelled = False
+
+    def cancel(self):
+        """Ask the running transcription to stop."""
+        self._cancelled = True
 
     def run(self):
         """Transcribe the audio file"""
@@ -162,43 +183,48 @@ class TranscriptionWorker(QThread):
             f"transcription channel: {self.transcription_channel}")
 
         try:
-            # Transcribe with specified language and channel
             transcription = self.analyzer.transcribe_audio(
-                self.file_path, self.language, self.transcription_channel)
-
-            if transcription:
-                # Create a text file for the transcription
-                base_name = os.path.splitext(
-                    os.path.basename(self.file_path))[0]
-                output_dir = os.path.dirname(self.file_path)
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-
-                # Include language and channel info in filename
-                lang_code = self.language or "auto"
-                channel_info = f"ch{self.transcription_channel}" if self.transcription_channel >= 0 else "mono"
-
-                output_file = os.path.join(
-                    output_dir, f"{base_name}_{channel_info}_{lang_code}_{timestamp}_transcript.txt")
-
-                # Save transcription to file
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    f.write(transcription)
-
-                self.logger.info(f"Transcription saved to: {output_file}")
-
-                # Open the file in the default text editor
-                self.open_text_file(output_file)
-
-                # Emit signals
-                self.finished.emit(transcription)
-                self.file_saved.emit(output_file)
-            else:
-                self.error.emit("No speech detected or transcription failed")
-
+                self.file_path, self.language, self.transcription_channel,
+                should_cancel=lambda: self._cancelled)
+        except TranscriptionCancelled:
+            self.logger.info("Transcription cancelled")
+            return
         except Exception as e:
             self.logger.error(f"Error in transcription: {e}")
             self.logger.error(traceback.format_exc())
-            self.error.emit(f"Error: {str(e)}")
+            self.error.emit(str(e))
+            return
+
+        if self._cancelled:
+            return
+
+        base_name = os.path.splitext(os.path.basename(self.file_path))[0]
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        lang_code = self.language or "auto"
+        channel_info = f"ch{self.transcription_channel + 1}" if self.transcription_channel >= 0 else "mono"
+        file_name = f"{base_name}_{channel_info}_{lang_code}_{timestamp}_transcript.txt"
+
+        # Save next to the audio file; fall back to the app data folder if that
+        # folder is read-only.
+        output_file = None
+        fallback_dir = os.path.join(
+            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "AudioTooltip", "Transcripts")
+        for folder in (os.path.dirname(self.file_path), fallback_dir):
+            try:
+                os.makedirs(folder, exist_ok=True)
+                candidate = os.path.join(folder, file_name)
+                with open(candidate, 'w', encoding='utf-8') as f:
+                    f.write(transcription)
+                output_file = candidate
+                break
+            except OSError as e:
+                self.logger.warning(f"Could not save transcript in {folder}: {e}")
+
+        self.finished.emit(transcription)
+        if output_file:
+            self.logger.info(f"Transcription saved to: {output_file}")
+            self.open_text_file(output_file)
+            self.file_saved.emit(output_file)
 
     def open_text_file(self, file_path):
         """Open text file in default editor"""
@@ -228,8 +254,14 @@ class VisualizationWorker(QThread):
         self.file_path = file_path
         self.viz_type = viz_type
         self.channel = channel
-        self.duration = duration
+        # Never process more than MAX_VIZ_SECONDS, even with "use whole signal"
+        self.duration = MAX_VIZ_SECONDS if duration == -1 else min(duration, MAX_VIZ_SECONDS)
         self.logger = get_module_logger("VisualizationWorker")
+        self._cancelled = False
+
+    def cancel(self):
+        """Discard the result when it arrives."""
+        self._cancelled = True
 
     def run(self):
         """Generate the visualization"""
@@ -241,7 +273,9 @@ class VisualizationWorker(QThread):
             # For Double Waveform, we need a special handling since it requires both channels
             if self.viz_type == "Double Waveform":
                 viz_buffer = self.analyzer.generate_double_waveform(
-                    self.file_path)
+                    self.file_path, self.duration)
+                if self._cancelled:
+                    return
                 if viz_buffer:
                     self.finished.emit((viz_buffer, self.viz_type))
                 else:
@@ -268,6 +302,8 @@ class VisualizationWorker(QThread):
             elif self.viz_type == "Chromagram":
                 viz_buffer = self.analyzer.generate_chromagram(y, sr)
 
+            if self._cancelled:
+                return
             if viz_buffer:
                 self.finished.emit((viz_buffer, self.viz_type))
             else:
@@ -350,6 +386,7 @@ class AudioTooltipApp(QWidget):
     hideProgressSignal = pyqtSignal()
     file_detected_signal = pyqtSignal(str)
     show_drop_window_signal = pyqtSignal()
+    notify_signal = pyqtSignal(str)  # tray balloon text, emitted from any thread
 
     def __init__(self, startup_mode=False):
         super().__init__()
@@ -358,6 +395,7 @@ class AudioTooltipApp(QWidget):
 
         # Initialize settings first (needed to check logging preference)
         self.settings = QSettings("AudioTooltip", "EnhancedPreferences")
+        self.first_run = not self.settings.contains("start_with_windows")
         self.load_default_settings()
 
         # Setup logging based on user preference (disabled by default)
@@ -372,7 +410,12 @@ class AudioTooltipApp(QWidget):
         # Initialize components
         self.tooltip = EnhancedTooltip(settings=self.settings)
         self.audio_analyzer = AudioAnalyzer(self.settings)
-        self.audio_playback = AudioPlayback()
+        self.audio_playback = AudioPlayback(loader=self.audio_analyzer.load_audio)
+        self.workers = []
+        self.viz_workers = []
+        self.transcription_workers = []
+        self._active_worker = None  # worker the progress dialog's Cancel applies to
+        self._quick_menu = None
 
         # Connect components
         self.audio_analyzer.initialize()
@@ -392,6 +435,7 @@ class AudioTooltipApp(QWidget):
         self.hideProgressSignal.connect(self.hide_progress_dialog)
         self.file_detected_signal.connect(self.analyze_file)
         self.show_drop_window_signal.connect(self.show_drop_window_slot)
+        self.notify_signal.connect(self.show_tray_message)
 
         # Initialize detection state before setup_hotkeys so on_hotkey()
         # never races against an uninitialized lock or flag.
@@ -417,7 +461,15 @@ class AudioTooltipApp(QWidget):
         self.cleanup_timer.timeout.connect(self.perform_cleanup)
         self.cleanup_timer.start(60000)  # Run every minute
 
+        # Import librosa in the background so the first analysis is not slowed down
+        QTimer.singleShot(3000, lambda: threading.Thread(
+            target=self.audio_analyzer.warm_up, daemon=True).start())
+
         self.module_logger.info("Application initialized")
+
+    def show_tray_message(self, message):
+        """Show a tray balloon (main thread only; use notify_signal from other threads)."""
+        self.tray_icon.showMessage("Audio Tooltip", message, QSystemTrayIcon.Information, 3000)
 
     def _emit_hide_progress(self, _result=None):
         """Relay slot: discards worker result and emits hideProgressSignal."""
@@ -433,7 +485,7 @@ class AudioTooltipApp(QWidget):
 
     def show_drop_window(self):
         """Trigger showing the drop target window via signal (thread-safe)"""
-        self.module_logger.info("Alt+D pressed - emitting signal to show drop window")
+        self.module_logger.info("Drop window hotkey pressed - emitting signal to show drop window")
         self.show_drop_window_signal.emit()
 
     def show_drop_window_slot(self):
@@ -493,6 +545,8 @@ class AudioTooltipApp(QWidget):
         # Input detection settings
         if not self.settings.contains("auto_close"):
             self.settings.setValue("auto_close", "true")
+        if not self.settings.contains("auto_close_time"):
+            self.settings.setValue("auto_close_time", "10")
 
         # Analysis settings
         if not self.settings.contains("preview_duration"):
@@ -514,15 +568,26 @@ class AudioTooltipApp(QWidget):
             if not self.settings.contains(key):
                 self.settings.setValue(key, "true")
 
-        # Set startup by default on first run only
-        if not self.settings.contains("start_with_windows"):
-            try:
-                from utils.startup_utils import StartupManager
-                startup_mgr = StartupManager()
-                startup_mgr.enable_startup()
-                self.settings.setValue("start_with_windows", True)
-            except Exception as e:
-                self.module_logger.warning(f"Could not set startup: {e}")
+        # Autostart is asked on first run (see ask_first_run). Here we only keep an
+        # existing registry entry pointing at the current executable with --startup.
+        try:
+            from utils.startup_utils import StartupManager
+            StartupManager().refresh_command()
+        except Exception:
+            pass
+
+    def ask_first_run(self):
+        """First launch: explain usage and ask whether to start with Windows."""
+        from utils.startup_utils import StartupManager
+        reply = QMessageBox.question(
+            None,
+            "Welcome to Audio Tooltip",
+            HELP_TEXT + "\n\nStart Audio Tooltip automatically when Windows starts?\n"
+            "(You can change this later in Settings.)",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        enabled = reply == QMessageBox.Yes
+        StartupManager().set_startup_enabled(enabled)
+        self.settings.setValue("start_with_windows", enabled)
 
     def _setting_bool(self, key: str, default: bool = False) -> bool:
         """Read a boolean setting stored as 'true'/'false' string."""
@@ -563,12 +628,12 @@ class AudioTooltipApp(QWidget):
         self.update_recent_menu()
 
         # Actions
-        analyze_action = QAction("Analyze File... (Middle-click / Alt+A)", self)
+        analyze_action = QAction("Analyze File...", self)
         analyze_action.triggered.connect(self.open_file_dialog)
 
         # Dedicated action for analyzing selected file in Explorer
         analyze_selected_action = QAction(
-            "Analyze Selected File in Explorer", self)
+            "Analyze Selected File in Explorer (Alt+A)", self)
         analyze_selected_action.triggered.connect(self.trigger_detection)
         analyze_selected_action.setToolTip(
             "Try to analyze the currently selected file in Explorer")
@@ -596,62 +661,40 @@ class AudioTooltipApp(QWidget):
         tray_menu.addAction(quit_action)
 
         # Add "Drop Target" action
-        drop_target_action = QAction("Open Drop Target Window", self)
+        drop_target_action = QAction("Open Drop Target Window (Alt+Shift+D)", self)
         drop_target_action.triggered.connect(self.show_drop_window)
-        tray_menu.addAction(drop_target_action)
+        tray_menu.insertAction(help_action, drop_target_action)
 
-        # Add Alt+D to show the drop window (only if keyboard module is available)
+        # Hotkey for the drop window (only if keyboard module is available)
         if KEYBOARD_AVAILABLE:
             try:
-                keyboard.add_hotkey('alt+d', self.show_drop_window, suppress=False)
+                keyboard.add_hotkey(DROP_WINDOW_HOTKEY, self.show_drop_window, suppress=False)
             except Exception as e:
-                self.module_logger.warning(f"Failed to register Alt+D hotkey: {e}")
+                self.module_logger.warning(f"Failed to register {DROP_WINDOW_HOTKEY} hotkey: {e}")
 
         # Set menu and show icon
         self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.setToolTip("Audio Tooltip")
         self.tray_icon.show()
 
         # Connect activation signal
         self.tray_icon.activated.connect(self.tray_icon_clicked)
 
-        # Show startup tooltip immediately
-        self.tray_icon.showMessage(
-            "Audio Tooltip Ready",
-            "3 ways to analyze audio: 1) Middle-click on an audio file, 2) Select a file and press Alt+A, or 3) Press Alt+D for drop window. Check system tray (hidden icons) for settings. First analysis may take time.",
-            QSystemTrayIcon.Information,
-            10000
-        )
-
-        # Also show a delayed notification in case user missed the first one
-        QTimer.singleShot(5000, self.show_delayed_help)
-
         self.module_logger.info("System tray initialized")
 
-    def show_help_notification(self):
-        """Show the help/instructions notification"""
-        self.module_logger.info("Show Instructions menu clicked")
-        
-        QMessageBox.information(
-            None,
-            "Audio Tooltip - How to Use",
-            "3 ways to analyze audio:\n\n1) Middle-click on an audio file\n2) Select a file and press Alt+A\n3) Press Alt+D for drop window\n\nCheck system tray (hidden icons) for settings.\nFirst analysis may take time."
-        )
-        
+    def show_ready_message(self):
+        """Single, short balloon after a manual launch."""
         self.tray_icon.showMessage(
-            "Audio Tooltip - How to Use",
-            "3 ways to analyze audio:\n1) Middle-click on an audio file\n2) Select a file and press Alt+A\n3) Press Alt+D for drop window\n\nCheck system tray (hidden icons) for settings.\nFirst analysis may take time.",
-            QSystemTrayIcon.Information,
-            15000
-        )
-
-    def show_delayed_help(self):
-        """Show a delayed help notification"""
-        self.tray_icon.showMessage(
-            "Audio Tooltip Ready!",
-            "Tip: Right-click this icon for menu, or try middle-clicking an audio file!",
+            "Audio Tooltip is running",
+            "Select an audio file in File Explorer and press Alt+A. "
+            "Right-click this icon for more.",
             QSystemTrayIcon.Information,
             5000
         )
+
+    def show_help_notification(self):
+        """Show the help/instructions dialog"""
+        QMessageBox.information(None, "Audio Tooltip - How to Use", HELP_TEXT)
 
     def update_recent_menu(self):
         """Update the recent files menu"""
@@ -675,8 +718,10 @@ class AudioTooltipApp(QWidget):
             # Launch file dialog on double-click
             self.open_file_dialog()
         elif reason == QSystemTrayIcon.Trigger:
-            # Show a custom quick menu on single click
+            # Show a custom quick menu on single click. Keep a reference, otherwise
+            # Python garbage-collects the menu and it closes immediately.
             menu = QMenu()
+            self._quick_menu = menu
 
             analyze_action = QAction("Analyze Audio File...", menu)
             analyze_action.setFont(QFont("Arial", 10, QFont.Bold))
@@ -810,13 +855,15 @@ class AudioTooltipApp(QWidget):
         if hasattr(self, 'tracking_thread') and self.tracking_thread.is_alive():
             self.tracking_thread.join(timeout=1.0)
 
-        # Hide tooltip and cleanup resources
-        self.tooltip.hide()
-        if hasattr(self.tooltip, 'audio_player'):
-            self.tooltip.audio_player.cleanup()
+        # Stop work in progress so no worker emits into a closing UI
+        for worker in self.workers + self.viz_workers + self.transcription_workers:
+            if hasattr(worker, 'cancel'):
+                worker.cancel()
 
-        # Final cleanup
-        self.perform_cleanup()
+        # Hide tooltip, stop playback and delete all preview files
+        self.tooltip.hide()
+        self.audio_playback.stop_playback()
+        self.audio_playback.cleanup()
 
         # Quit application
         QApplication.quit()
@@ -825,9 +872,15 @@ class AudioTooltipApp(QWidget):
         """Periodic cleanup to prevent memory leaks"""
         self.module_logger.debug("Performing periodic cleanup")
 
-        # Clean up audio playback temp files
-        if hasattr(self, 'audio_playback'):
-            self.audio_playback.cleanup()
+        # Delete preview clips that are no longer playing (never the current one)
+        self.audio_playback.cleanup(min_age_seconds=600)
+
+        # Forget finished workers
+        self.workers = [w for w in self.workers if w.isRunning()]
+        self.viz_workers = [w for w in self.viz_workers if w.isRunning()]
+        self.transcription_workers = [w for w in self.transcription_workers if w.isRunning()]
+
+        gc.collect()
 
         # Force garbage collection
         collected = gc.collect()
@@ -840,26 +893,28 @@ class AudioTooltipApp(QWidget):
             self.progress_dialog = ProgressDialog(
                 None, "Analyzing Audio", message, cancelable=True)
             self.progress_dialog.setWindowModality(Qt.NonModal)
-            if hasattr(self, 'workers') and self.workers:
-                current_worker = self.workers[-1]
-                self.progress_dialog.rejected.connect(
-                    partial(self._cancel_current_worker, current_worker))
+            self.progress_dialog.rejected.connect(self._cancel_active_worker)
         else:
             self.progress_dialog.update_message(message)
 
         self.progress_dialog.show()
         self.progress_dialog.raise_()
 
-    def _cancel_current_worker(self, worker):
-        """Cancel the given worker when progress dialog is rejected."""
-        if hasattr(worker, 'cancel'):
+    def _cancel_active_worker(self):
+        """Cancel the worker the progress dialog currently stands for."""
+        worker = self._active_worker
+        if worker is not None and hasattr(worker, 'cancel'):
             worker.cancel()
+        self._active_worker = None
+        self.progress_dialog = None
+        self.tooltip.hide_loading()
 
     def hide_progress_dialog(self):
         """Hide progress dialog"""
+        self._active_worker = None
         if hasattr(self, 'progress_dialog') and self.progress_dialog is not None:
-            self.progress_dialog.accept()
-            self.progress_dialog = None
+            dialog, self.progress_dialog = self.progress_dialog, None
+            dialog.accept()
 
     @pyqtSlot(str)
     def analyze_file(self, file_path, channel=0, force_refresh=False):
@@ -881,9 +936,10 @@ class AudioTooltipApp(QWidget):
                 )
                 return
 
-            # Ensure we keep track of workers
-            if not hasattr(self, "workers"):
-                self.workers = []  # Store all workers to prevent garbage collection
+            # A newer request supersedes any analysis still running
+            for old_worker in self.workers:
+                old_worker.cancel()
+            self.workers = [w for w in self.workers if w.isRunning()]
 
             # Create worker for async processing with force_refresh parameter
             try:
@@ -905,6 +961,7 @@ class AudioTooltipApp(QWidget):
 
                 # Store worker reference
                 self.workers.append(worker)
+                self._active_worker = worker
 
                 # Show progress dialog
                 try:
@@ -1034,9 +1091,6 @@ class AudioTooltipApp(QWidget):
         use_whole_signal = self._setting_bool("use_whole_signal", False)
         preview_duration = -1 if use_whole_signal else self._setting_int("preview_duration", 10)
 
-        # Show progress dialog
-        self.showProgressSignal.emit(f"Generating {viz_type}...")
-
         # Run in a worker thread
         worker = VisualizationWorker(
             self.audio_analyzer, self.tooltip.current_file, viz_type, channel, preview_duration)
@@ -1046,9 +1100,11 @@ class AudioTooltipApp(QWidget):
         worker.finished.connect(lambda _, w=worker: self._cleanup_list_worker(self.viz_workers, w))
 
         # Store worker reference
-        if not hasattr(self, "viz_workers"):
-            self.viz_workers = []
         self.viz_workers.append(worker)
+        self._active_worker = worker
+
+        # Show progress dialog
+        self.showProgressSignal.emit(f"Generating {viz_type}...")
 
         # Start worker
         worker.start()
@@ -1064,12 +1120,7 @@ class AudioTooltipApp(QWidget):
         if viz_buffer:
             pixmap = QPixmap()
             pixmap.loadFromData(viz_buffer.getvalue())
-            self.tooltip.viz_display.setPixmap(pixmap.scaled(
-                self.tooltip.viz_display.width(),
-                self.tooltip.viz_display.height(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            ))
+            self.tooltip.set_visualization(pixmap)
             self.tooltip.viz_combo_menu.setText(viz_type)
             self.tooltip._change_visualization(viz_type)  # Update description
             self.tooltip._viz_generated = True  # Mark visualization as explicitly generated
@@ -1078,13 +1129,11 @@ class AudioTooltipApp(QWidget):
         """Handle worker thread errors"""
         self.module_logger.error(f"Worker error: {error_message}")
         self.hideProgressSignal.emit()
+        self.tooltip.hide_loading()
 
         # Show error message
-        QMessageBox.warning(
-            None,
-            "Analysis Error",
-            f"An error occurred while analyzing the audio file:\n{error_message}"
-        )
+        # Messages already say what failed (analysis, visualization or transcription)
+        QMessageBox.warning(None, "Audio Tooltip", error_message)
 
     def show_tooltip_slot(self, result):
         """Show tooltip with analysis results"""
@@ -1102,6 +1151,17 @@ class AudioTooltipApp(QWidget):
             else:  # Oldest format
                 file_path, metadata, viz_buffer, transcription, num_channels = result
                 channel, time_delay = 0, None
+
+            # Size and place the tooltip on the screen where the mouse is,
+            # unless it is already open (keep the user's position). Done before
+            # filling it so images are scaled to the final size.
+            if not self.tooltip.isVisible():
+                screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+                screen_rect = screen.availableGeometry()
+                self.tooltip.fit_to_screen(screen_rect)
+                x = screen_rect.x() + screen_rect.width() - self.tooltip.width() - 20
+                y = screen_rect.y() + 20
+                self.tooltip.move(max(screen_rect.x(), x), max(screen_rect.y(), y))
 
             # Update tooltip content with time_delay if available
             if time_delay is not None:
@@ -1124,25 +1184,6 @@ class AudioTooltipApp(QWidget):
                     channel
                 )
 
-            # Get available screen geometry
-            screen_rect = QApplication.primaryScreen().availableGeometry()
-
-            # Set a reasonable size constraint
-            max_width = min(screen_rect.width() - 100, 1600)
-            max_height = min(screen_rect.height() - 100, 800)
-
-            if self.tooltip.width() > max_width or self.tooltip.height() > max_height:
-                self.tooltip.resize(max_width, max_height)
-
-            # Position safely within screen bounds
-            x = min(screen_rect.width() - self.tooltip.width() -
-                    50, screen_rect.x() + screen_rect.width() - 50)
-            y = min(50, screen_rect.y() + screen_rect.height() -
-                    self.tooltip.height() - 50)
-            x = max(screen_rect.x(), x)  # Ensure not off-screen left
-            y = max(screen_rect.y(), y)  # Ensure not off-screen top
-
-            self.tooltip.move(x, y)
 
             # Show with animation
             self.tooltip.show_with_fade()
@@ -1160,9 +1201,6 @@ class AudioTooltipApp(QWidget):
             f"Transcription requested for {file_path}, UI channel {channel}, " +
             f"transcription channel {transcription_channel}, language: {language or 'auto'}")
 
-        # Show progress dialog
-        self.showProgressSignal.emit("Transcribing audio...")
-
         # Run in a worker thread
         worker = TranscriptionWorker(
             self.audio_analyzer, file_path, channel, language, transcription_channel)
@@ -1175,9 +1213,11 @@ class AudioTooltipApp(QWidget):
         worker.finished.connect(lambda _, w=worker: self._cleanup_list_worker(self.transcription_workers, w))
 
         # Store worker reference
-        if not hasattr(self, "transcription_workers"):
-            self.transcription_workers = []
         self.transcription_workers.append(worker)
+        self._active_worker = worker
+
+        # Show progress dialog
+        self.showProgressSignal.emit("Transcribing audio...")
 
         # Start worker
         worker.start()
@@ -1207,11 +1247,49 @@ class AudioTooltipApp(QWidget):
         self.tooltip.transcript_file_path = file_path
         self.tooltip.view_transcript_button.setEnabled(True)
 
-    def check_file_under_cursor(self):
-        """Detect selected audio file in Explorer windows.
+    def _start_detection(self, source):
+        """Run Explorer selection detection in a background thread (one at a time)."""
+        with self._detection_lock:
+            if self.detection_active:
+                return
+            self.detection_active = True
+        try:
+            threading.Thread(target=self.check_file_under_cursor,
+                             args=(source,), daemon=True).start()
+        except Exception as e:
+            self.module_logger.error(f"Error starting detection thread: {e}")
+            with self._detection_lock:
+                self.detection_active = False
 
-        Checks foreground window first, then all Explorer windows in z-order,
-        then focused items, and finally the clipboard as a last resort.
+    @staticmethod
+    def _window_class(hwnd):
+        try:
+            return win32gui.GetClassName(hwnd)
+        except Exception:
+            return ""
+
+    def _selected_audio_file(self, shell_window):
+        """First selected audio file of an Explorer window, or None."""
+        try:
+            selected = shell_window.Document.SelectedItems()
+            for j in range(selected.Count):
+                path = selected.Item(j).Path
+                if is_audio_file(path) and os.path.isfile(path):
+                    return path
+        except Exception as e:
+            self.module_logger.debug(f"Cannot read Explorer selection: {e}")
+        return None
+
+    def check_file_under_cursor(self, source="hotkey"):
+        """Find the audio file selected in File Explorer and analyze it.
+
+        source:
+            "middle": middle click. Only acts when the click is inside the
+                      foreground Explorer window, and stays silent otherwise.
+            "hotkey": Alt+A. Only when File Explorer is the foreground
+                      window; shows a tray message if no audio file is selected.
+            "menu":   tray menu. Explorer windows from top to bottom; shows a
+                      tray message when nothing is selected.
         """
         if not WINDOWS_API_AVAILABLE:
             self.module_logger.error("Cannot detect files: Windows API unavailable")
@@ -1219,166 +1297,60 @@ class AudioTooltipApp(QWidget):
                 self.detection_active = False
             return False
 
-        self.module_logger.info("Starting audio file detection")
-
+        com_initialized = False
         try:
-            # Initialize COM for this thread
-            try:
-                pythoncom.CoInitializeEx(0)
-            except Exception as com_e:
-                self.module_logger.warning(f"COM initialization error: {com_e}")
+            pythoncom.CoInitialize()
+            com_initialized = True
 
-            # Get foreground window info
-            foreground_hwnd = None
-            try:
-                foreground_hwnd = win32gui.GetForegroundWindow()
-                self.module_logger.info(
-                    f"Foreground window: {win32gui.GetWindowText(foreground_hwnd)}, HWND: {foreground_hwnd}")
-            except Exception as fg_e:
-                self.module_logger.warning(f"Error getting foreground window: {fg_e}")
+            foreground = win32gui.GetForegroundWindow()
+            foreground_is_explorer = self._window_class(foreground) in EXPLORER_WINDOW_CLASSES
 
-            try:
-                shell = Dispatch("Shell.Application")
-                windows = shell.Windows()
-                self.module_logger.debug(f"Found {windows.Count} Explorer windows")
+            # Alt+A also reaches other apps: only react when Explorer is in front
+            if source == "hotkey" and not foreground_is_explorer:
+                return False
 
-                found_file = False
-                foreground_explorer = None
+            if source == "middle":
+                if not foreground_is_explorer:
+                    return False
+                under_cursor = win32gui.WindowFromPoint(win32api.GetCursorPos())
+                if ctypes.windll.user32.GetAncestor(under_cursor, GA_ROOT) != foreground:
+                    return False
 
-                # --- Step 1: Match foreground window to a Shell window ---
-                if foreground_hwnd:
-                    for i in range(windows.Count):
-                        try:
-                            window = windows.Item(i)
-                            if window is None:
-                                continue
-                            try:
-                                if window.HWND == foreground_hwnd:
-                                    foreground_explorer = window
-                                    break
-                            except Exception:
-                                pass
-                        except Exception:
-                            pass
-
-                # --- Step 2: Check foreground Explorer window ---
-                if foreground_explorer:
-                    try:
-                        selected = foreground_explorer.Document.SelectedItems()
-                        if selected and selected.Count > 0:
-                            for j in range(selected.Count):
-                                try:
-                                    file_path = selected.Item(j).Path
-                                    if is_audio_file(file_path) and os.path.exists(file_path):
-                                        self.module_logger.info(f"Audio file in foreground: {file_path}")
-                                        self.file_detected_signal.emit(file_path)
-                                        return True
-                                except Exception as item_e:
-                                    self.module_logger.warning(f"Error processing selected item: {item_e}")
-                    except Exception as sel_e:
-                        self.module_logger.warning(f"Error getting selected items from foreground: {sel_e}")
-
-                # --- Step 3: Check all Explorer windows in z-order ---
-                self.module_logger.info("Checking all Explorer windows in z-order")
-
-                def enum_windows_callback(hwnd, windows_list):
-                    if win32gui.IsWindowVisible(hwnd):
-                        windows_list.append(hwnd)
-
-                window_z_order = []
-                win32gui.EnumWindows(enum_windows_callback, window_z_order)
-
-                # Map shell windows to z-order
-                shell_windows_by_z = []
-                for hwnd in window_z_order:
-                    for i in range(windows.Count):
-                        try:
-                            window = windows.Item(i)
-                            if window and window.HWND == hwnd:
-                                shell_windows_by_z.append(window)
-                                break
-                        except Exception:
-                            pass
-
-                # Add any remaining shell windows not matched by z-order
-                for i in range(windows.Count):
-                    try:
-                        window = windows.Item(i)
-                        if window and window not in shell_windows_by_z:
-                            shell_windows_by_z.append(window)
-                    except Exception:
-                        pass
-
-                # Check selected items in each window (z-order, top to bottom)
-                for window in shell_windows_by_z:
-                    try:
-                        # Skip the foreground window we already checked
-                        if foreground_explorer and window.HWND == foreground_explorer.HWND:
-                            continue
-
-                        try:
-                            selected = window.Document.SelectedItems()
-                            if selected is None or selected.Count == 0:
-                                continue
-
-                            for j in range(selected.Count):
-                                try:
-                                    file_path = selected.Item(j).Path
-                                    if is_audio_file(file_path) and os.path.exists(file_path):
-                                        self.module_logger.info(f"Audio file detected: {file_path}")
-                                        self.file_detected_signal.emit(file_path)
-                                        return True
-                                except Exception as item_e:
-                                    self.module_logger.warning(f"Error processing item: {item_e}")
-                        except Exception as sel_e:
-                            self.module_logger.warning(f"Error getting selected items: {sel_e}")
-                    except Exception as window_e:
-                        self.module_logger.warning(f"Error processing window: {window_e}")
-
-                # --- Step 4: Try focused item fallback ---
-                self.module_logger.info("Trying focused items")
-                for window in shell_windows_by_z:
-                    try:
-                        if window.Visible:
-                            try:
-                                focused = window.Document.FocusedItem
-                                if focused:
-                                    file_path = focused.Path
-                                    if is_audio_file(file_path) and os.path.exists(file_path):
-                                        self.module_logger.info(f"Audio file detected (focused): {file_path}")
-                                        self.file_detected_signal.emit(file_path)
-                                        return True
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-
-                # --- Step 5: Try clipboard ---
-                self.module_logger.info("Trying clipboard for file path")
+            # Shell windows grouped by top-level window (Windows 11: one entry per tab)
+            shell_windows = Dispatch("Shell.Application").Windows()
+            by_hwnd = {}
+            for i in range(shell_windows.Count):
                 try:
-                    clipboard = QApplication.clipboard()
-                    clipboard_text = clipboard.text()
-                    if clipboard_text and os.path.exists(clipboard_text) and is_audio_file(clipboard_text):
-                        self.module_logger.info(f"Found audio file in clipboard: {clipboard_text}")
-                        self.file_detected_signal.emit(clipboard_text)
+                    window = shell_windows.Item(i)
+                    if window is not None:
+                        by_hwnd.setdefault(int(window.HWND), []).append(window)
+                except Exception:
+                    pass
+
+            candidates = [foreground] if foreground_is_explorer else []
+            if source == "menu":
+                z_order = []
+
+                def collect(hwnd, acc):
+                    if self._window_class(hwnd) in EXPLORER_WINDOW_CLASSES and hwnd != foreground:
+                        acc.append(hwnd)
+                    return True
+
+                win32gui.EnumWindows(collect, z_order)
+                candidates += z_order
+
+            for hwnd in candidates:
+                for window in by_hwnd.get(hwnd, []):
+                    file_path = self._selected_audio_file(window)
+                    if file_path:
+                        self.module_logger.info(f"Audio file detected ({source}): {file_path}")
+                        self.file_detected_signal.emit(file_path)
                         return True
-                except Exception as clip_e:
-                    self.module_logger.error(f"Error checking clipboard: {clip_e}")
 
-                # Nothing found
-                self.module_logger.info("No audio files found in any window")
-                self.tray_icon.showMessage(
-                    "Audio Tooltip",
-                    "No audio file selected. Please select an audio file in Explorer.",
-                    QSystemTrayIcon.Information,
-                    3000
-                )
-                return False
-
-            except Exception as shell_e:
-                self.module_logger.error(f"Shell API error: {shell_e}")
-                self.module_logger.error(traceback.format_exc())
-                return False
+            if source != "middle":
+                self.notify_signal.emit(
+                    "No audio file selected. Select an audio file in File Explorer, then press Alt+A.")
+            return False
 
         except Exception as e:
             self.module_logger.error(f"Error in audio file detection: {e}")
@@ -1387,10 +1359,8 @@ class AudioTooltipApp(QWidget):
         finally:
             with self._detection_lock:
                 self.detection_active = False
-            try:
+            if com_initialized:
                 pythoncom.CoUninitialize()
-            except Exception:
-                pass
 
     def track_input(self):
         # Require at least one input facility: Windows API (mouse) or keyboard hooks
@@ -1400,108 +1370,59 @@ class AudioTooltipApp(QWidget):
 
         self.module_logger.info("Input tracking thread started")
 
-        def on_hotkey():
-            # Triggered by keyboard hotkey (Alt+A). Use same behavior as right-click gesture.
-            with self._detection_lock:
-                if self.detection_active:
-                    return
-                self.detection_active = True
-            try:
-                detection_thread = threading.Thread(target=self.check_file_under_cursor)
-                detection_thread.daemon = True
-                detection_thread.start()
-            except Exception as e:
-                self.module_logger.error(f"Error in hotkey handler: {e}")
-                self.module_logger.error(traceback.format_exc())
-                with self._detection_lock:
-                    self.detection_active = False
-
-        # Try to register the keyboard hotkey if available
         if KEYBOARD_AVAILABLE:
             try:
                 try:
                     keyboard.remove_hotkey('alt+a')
                 except Exception:
                     pass
-                keyboard.add_hotkey('alt+a', on_hotkey, suppress=False)
+                keyboard.add_hotkey(
+                    'alt+a', lambda: self._start_detection("hotkey"), suppress=False)
                 self.module_logger.info("Hotkey registered successfully")
             except Exception as reg_e:
                 self.module_logger.error(f"Failed to register hotkey: {reg_e}")
 
-        # Poll middle mouse button (single click) using Win32 API if available
+        # Poll the middle mouse button; react only to clicks while File Explorer
+        # is the foreground window (browsers use middle click for new tabs).
         middle_button_prev = False
-
         while self.running:
             try:
-                # Poll middle mouse button (single click) using Win32 API if available
                 if WINDOWS_API_AVAILABLE:
-                    try:
-                        state = win32api.GetAsyncKeyState(0x04)  # VK_MBUTTON
-                        mouse_down = (state & 0x8000) != 0
-                        # Detect edge from up -> down to debounce (one trigger per physical click)
-                        if mouse_down and not middle_button_prev:
-                            self.module_logger.debug("Middle click detected")
-                            with self._detection_lock:
-                                if self.detection_active:
-                                    middle_button_prev = mouse_down
-                                    continue
-                                self.detection_active = True
-                            try:
-                                detection_thread = threading.Thread(target=self.check_file_under_cursor)
-                                detection_thread.daemon = True
-                                detection_thread.start()
-                            except Exception as e:
-                                self.module_logger.error(f"Error starting detection thread: {e}")
-                                with self._detection_lock:
-                                    self.detection_active = False
-                        middle_button_prev = mouse_down
-                    except Exception as mouse_e:
-                        self.module_logger.debug(f"Mouse polling error: {mouse_e}")
-
-                # Sleep briefly to avoid busy loop
-                try:
-                    time.sleep(0.05)
-                except Exception as sleep_e:
-                    self.module_logger.error(f"Error in input tracking sleep: {sleep_e}")
-                    time.sleep(0.5)
-
+                    mouse_down = (win32api.GetAsyncKeyState(0x04) & 0x8000) != 0  # VK_MBUTTON
+                    if (mouse_down and not middle_button_prev and
+                            self._window_class(win32gui.GetForegroundWindow()) in EXPLORER_WINDOW_CLASSES):
+                        self._start_detection("middle")
+                    middle_button_prev = mouse_down
             except Exception as e:
-                self.module_logger.error(f"Error in input tracking main loop: {e}")
-                self.module_logger.error(traceback.format_exc())
-                time.sleep(0.5)
+                self.module_logger.debug(f"Mouse polling error: {e}")
+            time.sleep(0.05)
 
         self.module_logger.info("Input tracking thread terminated")
 
     def trigger_detection(self):
         """Trigger audio file detection from tray menu."""
         self.module_logger.info("Tray menu detection triggered")
-        with self._detection_lock:
-            if self.detection_active:
-                return
-            self.detection_active = True
-        try:
-            detection_thread = threading.Thread(target=self.check_file_under_cursor)
-            detection_thread.daemon = True
-            detection_thread.start()
-        except Exception as e:
-            self.module_logger.error(f"Error starting detection thread: {e}")
-            with self._detection_lock:
-                self.detection_active = False
+        self._start_detection("menu")
 
 
-def finish_startup_sequence(splash, tooltip_app):
-    """Finish the startup sequence by closing splash and showing instructions"""
-    if splash:
-        splash.finish(None)
-    # Show instructions dialog after a brief delay
-    QTimer.singleShot(500, tooltip_app.show_help_notification)
+def acquire_single_instance():
+    """Return a mutex handle if this is the only running instance, else None."""
+    try:
+        import win32event
+        import winerror
+        handle = win32event.CreateMutex(None, False, "AudioTooltip_SingleInstance")
+        if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+            return None
+        return handle
+    except Exception:
+        return True  # Cannot check: let the app start
 
 
 def main(app=None, splash=None, args=None):
     """Main application entry point"""
-    
-    # Handle startup/minimized mode
-    startup_mode = args and (args.startup or args.minimized) if args else False
+
+    # --startup is passed by the Windows autostart entry: no splash, no messages
+    startup_mode = bool(args and (args.startup or args.minimized))
 
     try:
         # If app wasn't provided, create it (for backward compatibility)
@@ -1511,34 +1432,20 @@ def main(app=None, splash=None, args=None):
             app.setApplicationName("Audio Tooltip")
             app.setOrganizationName("MCDE - FHL 2025")
 
-        # Update splash message if splash exists
         if splash:
-            splash.showMessage("Initializing components...",
-                               Qt.AlignBottom | Qt.AlignCenter, QColor(255, 255, 255))
-            app.processEvents()
-            # Add a small delay to make splash more visible
-            QTimer.singleShot(1500, lambda: None)
-            app.processEvents()
-
-        # Update splash for app creation
-        if splash:
-            splash.showMessage("Creating application...",
+            splash.showMessage("Starting...",
                                Qt.AlignBottom | Qt.AlignCenter, QColor(255, 255, 255))
             app.processEvents()
 
-        # Create main app with explicit error handling
         tooltip_app = AudioTooltipApp(startup_mode=startup_mode)
 
-        # Update splash for final step and always show instructions
         if splash:
-            splash.showMessage("Starting services...",
-                               Qt.AlignBottom | Qt.AlignCenter, QColor(255, 255, 255))
-            app.processEvents()
-            # Keep splash visible a bit longer, then show instructions
-            QTimer.singleShot(2000, lambda: finish_startup_sequence(splash, tooltip_app))
-        else:
-            # Show instructions immediately if no splash
-            QTimer.singleShot(1000, tooltip_app.show_help_notification)
+            splash.finish(None)
+
+        if tooltip_app.first_run:
+            QTimer.singleShot(0, tooltip_app.ask_first_run)
+        elif not startup_mode:
+            tooltip_app.show_ready_message()
 
         # Start the event loop
         return app.exec_()
@@ -1552,11 +1459,16 @@ def main(app=None, splash=None, args=None):
 if __name__ == '__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='AudioTooltip - Audio Analysis Tool')
-    parser.add_argument('--startup', action='store_true', 
-                       help='Start minimized to system tray (for Windows startup)')
+    parser.add_argument('--startup', action='store_true',
+                        help='Start silently in the system tray (used by Windows startup)')
     parser.add_argument('--minimized', action='store_true',
-                       help='Start minimized to system tray')
+                        help='Start silently in the system tray')
     args = parser.parse_args()
+    startup_mode = args.startup or args.minimized
+
+    # High-DPI: scale the UI with the Windows display scaling (must precede QApplication)
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     # Create application first
     app = QApplication(sys.argv)
@@ -1565,45 +1477,56 @@ if __name__ == '__main__':
     app.setApplicationName("Audio Tooltip")
     app.setOrganizationName("MCDE - FHL 2025")
 
-    # Always create and show splash screen
-    splash_pixmap = QPixmap(500, 300)
-    splash_pixmap.fill(QColor(50, 50, 80))  # Dark blue background
+    instance_lock = acquire_single_instance()
+    if instance_lock is None:
+        if pyi_splash is not None:
+            pyi_splash.close()
+        if not startup_mode:
+            QMessageBox.information(
+                None, "Audio Tooltip",
+                "Audio Tooltip is already running.\n\n"
+                "Look for its icon in the system tray (hidden icons).")
+        sys.exit(0)
 
-    # Draw content on the pixmap
-    painter = QPainter(splash_pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setRenderHint(QPainter.TextAntialiasing)
-    
-    # Title
-    title_font = QFont("Arial", 24, QFont.Bold)
-    painter.setFont(title_font)
-    painter.setPen(QColor(255, 255, 255))  # White text
-    painter.drawText(20, 50, "Audio Tooltip")
-    
-    # Version
-    version_font = QFont("Arial", 12)
-    painter.setFont(version_font)
-    painter.setPen(QColor(200, 200, 200))  # Light gray
-    painter.drawText(20, 80, "v3.0.5 - Audio Analysis Tool")
-    
-    # Loading message
-    loading_font = QFont("Arial", 14)
-    painter.setFont(loading_font)
-    painter.setPen(QColor(100, 150, 255))  # Light blue
-    painter.drawText(20, 220, "Loading components...")
-    
-    # Progress bar visual
-    painter.setPen(QColor(100, 150, 255))
-    painter.drawRect(20, 240, 460, 20)
-    painter.fillRect(22, 242, 456, 16, QColor(100, 150, 255))
-    
-    painter.end()
+    splash = None
+    if not startup_mode:
+        splash_pixmap = QPixmap(500, 300)
+        splash_pixmap.fill(QColor(50, 50, 80))  # Dark blue background
 
-    # Create splash screen using the painted pixmap
-    splash = QSplashScreen(splash_pixmap)
-    splash.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.SplashScreen)
-    splash.show()
-    app.processEvents()
+        # Draw content on the pixmap
+        painter = QPainter(splash_pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+
+        # Title
+        title_font = QFont("Arial", 24, QFont.Bold)
+        painter.setFont(title_font)
+        painter.setPen(QColor(255, 255, 255))  # White text
+        painter.drawText(20, 50, "Audio Tooltip")
+
+        # Version
+        version_font = QFont("Arial", 12)
+        painter.setFont(version_font)
+        painter.setPen(QColor(200, 200, 200))  # Light gray
+        painter.drawText(20, 80, "v3.0.5 - Audio Analysis Tool")
+
+        # Loading message
+        loading_font = QFont("Arial", 14)
+        painter.setFont(loading_font)
+        painter.setPen(QColor(100, 150, 255))  # Light blue
+        painter.drawText(20, 220, "Loading components...")
+
+        # Progress bar visual
+        painter.setPen(QColor(100, 150, 255))
+        painter.drawRect(20, 240, 460, 20)
+        painter.fillRect(22, 242, 456, 16, QColor(100, 150, 255))
+
+        painter.end()
+
+        splash = QSplashScreen(splash_pixmap)
+        splash.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.SplashScreen)
+        splash.show()
+        app.processEvents()
 
     # Close the PyInstaller native splash now that the Qt splash is visible
     if pyi_splash is not None:
