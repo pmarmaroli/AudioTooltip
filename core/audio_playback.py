@@ -1,196 +1,124 @@
 """
 Audio Playback Module
 --------------------
-Handles audio playback and preview generation with efficient resource management.
+Preview clips played inside the app (stoppable), plus opening files in the
+system default player.
 """
 
 import os
 import time
 import logging
 import tempfile
-import subprocess
 import traceback
-from pathlib import Path
-from typing import Optional, List, Union
+from typing import Optional, List, Tuple, Callable
 
-import numpy as np
-
-# Optional dependencies with fallbacks
-try:
-    import soundfile as sf
-    SF_AVAILABLE = True
-except ImportError:
-    SF_AVAILABLE = False
+import soundfile as sf
 
 try:
-    import librosa
-    LIBROSA_AVAILABLE = True
-except ImportError:
-    LIBROSA_AVAILABLE = False
+    import winsound
+    WINSOUND_AVAILABLE = True
+except ImportError:  # not on Windows
+    WINSOUND_AVAILABLE = False
 
 
 class AudioPlayback:
-    """
-    Handles audio playback and preview clip generation with resource management.
-    """
+    """Creates WAV preview clips, plays them in-process and cleans them up."""
 
-    def __init__(self):
-        """Initialize the audio playback manager"""
+    def __init__(self, loader: Optional[Callable] = None):
+        """
+        Args:
+            loader: function(path, duration=..., channel=...) returning
+                    (samples, sample_rate, total_duration, num_channels), e.g.
+                    AudioAnalyzer.load_audio. It decodes every supported format.
+        """
         self.logger = logging.getLogger("AudioPlayback")
+        self.loader = loader
         self.temp_files: List[str] = []
-        self.playing_process = None
-        self.logger.info("AudioPlayback initialized")
+        self.current_clip: Optional[str] = None
 
     def play_audio(self, file_path: str) -> bool:
-        """
-        Play audio file using system default player.
-
-        Args:
-            file_path: Path to audio file
-
-        Returns:
-            bool: True if playback started successfully
-        """
+        """Open a file in the system default player."""
         if not os.path.exists(file_path):
             self.logger.error(f"File not found: {file_path}")
             return False
-
         try:
-            # Stop any currently playing audio
-            self.stop_playback()
-
-            # Use appropriate method based on OS
-            if os.name == 'nt':  # Windows
-                self.logger.debug(
-                    f"Starting playback with Windows default player: {file_path}")
-                os.startfile(file_path)
-                return True
-            elif os.name == 'posix':  # macOS, Linux
-                if os.uname().sysname == 'Darwin':  # macOS
-                    self.logger.debug(
-                        f"Starting playback with macOS open: {file_path}")
-                    self.playing_process = subprocess.Popen(
-                        ['open', file_path])
-                    return True
-                else:  # Linux
-                    self.logger.debug(
-                        f"Starting playback with xdg-open: {file_path}")
-                    self.playing_process = subprocess.Popen(
-                        ['xdg-open', file_path])
-                    return True
-            else:
-                self.logger.error(f"Unsupported OS: {os.name}")
-                return False
-
+            os.startfile(file_path)
+            return True
         except Exception as e:
             self.logger.error(f"Error playing audio: {e}")
-            self.logger.error(traceback.format_exc())
+            return False
+
+    def play_clip(self, clip_path: str) -> bool:
+        """Play a WAV clip asynchronously inside the app."""
+        if not WINSOUND_AVAILABLE:
+            return self.play_audio(clip_path)
+        try:
+            self.stop_playback()
+            winsound.PlaySound(
+                clip_path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            self.current_clip = clip_path
+            return True
+        except Exception as e:
+            self.logger.error(f"Error playing clip: {e}")
             return False
 
     def stop_playback(self) -> None:
-        """Stop any currently playing audio"""
-        if self.playing_process:
+        """Stop the clip currently playing, if any."""
+        if WINSOUND_AVAILABLE:
             try:
-                self.playing_process.terminate()
-                self.playing_process = None
-                self.logger.debug("Stopped playback")
+                winsound.PlaySound(None, 0)
             except Exception as e:
                 self.logger.warning(f"Error stopping playback: {e}")
+        self.current_clip = None
 
-    def create_temp_clip(self, file_path: str, duration: float = 10.0) -> Optional[str]:
+    def create_temp_clip(self, file_path: str, duration: float = 10.0,
+                         channel: int = 0) -> Tuple[Optional[str], float]:
         """
-        Create a temporary preview clip of the audio file.
-
-        Args:
-            file_path: Path to original audio file
-            duration: Duration of preview in seconds
+        Write the first `duration` seconds of one channel to a temporary
+        16-bit WAV (playable whatever the source format).
 
         Returns:
-            str: Path to temporary preview file or None on error
+            (clip_path, clip_seconds), or (None, 0) on error.
         """
-        if not os.path.exists(file_path):
-            self.logger.error(f"File not found: {file_path}")
-            return None
-
-        # Check if required libraries are available
-        if not SF_AVAILABLE and not LIBROSA_AVAILABLE:
-            self.logger.error(
-                "Neither soundfile nor librosa available for preview generation")
-            return file_path  # Fall back to original file
-
+        if self.loader is None:
+            self.logger.error("No audio loader configured")
+            return None, 0.0
         try:
-            # Create unique temp filename
-            file_ext = os.path.splitext(file_path)[1].lower()
-            if not file_ext:
-                file_ext = '.wav'  # Default format
-
-            temp_dir = tempfile.gettempdir()
-            temp_filename = f"preview_{int(time.time())}_{os.path.basename(file_path)}"
-            # Ensure the temp filename has the same extension as the source (or .wav fallback)
-            if not temp_filename.lower().endswith(file_ext):
-                temp_filename = temp_filename + file_ext
-            temp_path = os.path.join(temp_dir, temp_filename)
-
-            self.logger.info(
-                f"Creating {duration}s preview clip from {file_path}")
-
-            # Load audio data
-            y = None
-            sr = None
-
-            if SF_AVAILABLE:
-                try:
-                    with sf.SoundFile(file_path) as f:
-                        # Calculate frames to read for duration
-                        frames_to_read = min(
-                            int(f.samplerate * duration), f.frames)
-                        y = f.read(frames_to_read)
-                        sr = f.samplerate
-                except Exception as sf_e:
-                    self.logger.warning(f"Soundfile loading failed: {sf_e}")
-
-            if y is None and LIBROSA_AVAILABLE:
-                try:
-                    y, sr = librosa.load(file_path, duration=duration)
-                except Exception as lib_e:
-                    self.logger.error(f"Librosa loading failed: {lib_e}")
-                    return None
-
-            if y is None or sr is None:
+            y, sr, _, _ = self.loader(file_path, duration=duration, channel=channel)
+            if y is None or sr is None or len(y) == 0:
                 self.logger.error("Failed to load audio data for preview")
-                return None
+                return None, 0.0
 
-            # Write preview file
-            if SF_AVAILABLE:
-                sf.write(temp_path, y, sr)
-            else:
-                import scipy.io.wavfile
-                scipy.io.wavfile.write(temp_path, sr, y.astype(np.float32))
-
-            # Track temp file for cleanup
+            fd, temp_path = tempfile.mkstemp(prefix="audiotooltip_preview_", suffix=".wav")
+            os.close(fd)
+            sf.write(temp_path, y, sr, subtype='PCM_16')
             self.temp_files.append(temp_path)
-            self.logger.info(f"Created preview clip: {temp_path}")
-
-            return temp_path
+            return temp_path, len(y) / sr
 
         except Exception as e:
             self.logger.error(f"Error creating preview clip: {e}")
             self.logger.error(traceback.format_exc())
-            return None
+            return None, 0.0
 
-    def cleanup(self) -> None:
-        """Clean up temporary files"""
-        self.stop_playback()
-
-        # Remove temp files
+    def cleanup(self, min_age_seconds: Optional[float] = None) -> None:
+        """
+        Delete preview clips. With min_age_seconds, only clips older than that
+        and not currently playing are deleted; files that cannot be deleted
+        are kept in the list and retried later.
+        """
+        now = time.time()
+        remaining = []
         for temp_file in self.temp_files:
             try:
-                if os.path.exists(temp_file):
-                    os.unlink(temp_file)
-                    self.logger.debug(f"Removed temp file: {temp_file}")
-            except Exception as e:
-                self.logger.warning(
-                    f"Failed to remove temp file {temp_file}: {e}")
-
-        self.temp_files = []
-        self.logger.info("Completed temp file cleanup")
+                if not os.path.exists(temp_file):
+                    continue
+                if min_age_seconds is not None and (
+                        temp_file == self.current_clip or
+                        now - os.path.getmtime(temp_file) < min_age_seconds):
+                    remaining.append(temp_file)
+                    continue
+                os.unlink(temp_file)
+            except OSError as e:
+                self.logger.debug(f"Could not remove temp file {temp_file}: {e}")
+                remaining.append(temp_file)
+        self.temp_files = remaining

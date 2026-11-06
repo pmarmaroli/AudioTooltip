@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AudioTooltip is a Windows-only desktop application (PyQt5) that analyzes audio files via system tray hotkeys (Alt+A, Alt+D) or drag-and-drop. It displays waveforms, spectrograms, metadata, and optional Azure speech transcription in a tooltip UI. Built with PyInstaller into a single .exe.
+AudioTooltip is a Windows-only desktop application (PyQt5) that analyzes audio files via system tray hotkeys (Alt+A, Alt+Shift+D) or drag-and-drop. It displays waveforms, spectrograms, metadata, and optional Azure speech transcription in a tooltip UI. Built with PyInstaller as a one-folder build (`dist/AudioTooltip/`).
 
 ## Build & Run Commands
 

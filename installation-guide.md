@@ -16,9 +16,9 @@ To get the latest release, go to the [Releases page](https://github.com/pmarmaro
 
 ## How to use Audio Tooltip
 
-1. **Middle-click** an audio file in Windows Explorer, or
+1. **Select** an audio file in Windows Explorer and **middle-click** in that Explorer window, or
 2. **Press Alt+A** after selecting an audio file, or  
-3. **Press Alt+D** to open the drop window and drag/drop an audio file
+3. **Press Alt+Shift+D** to open the drop window and drag/drop an audio file
 4. The analysis tooltip will appear with detailed information
 
 ### Tooltip Features
@@ -34,15 +34,16 @@ The tooltip interface provides several tabs:
 ### Keyboard Shortcuts
 
 - **Alt+A**: Analyze the currently selected audio file in Windows Explorer
-- **Alt+D**: Open the drop target window for drag-and-drop file analysis
+- **Alt+Shift+D**: Open the drop target window for drag-and-drop file analysis
 
 ### System Tray Integration
 
 Audio Tooltip runs in the system tray and provides:
 
 - **Right-click tray icon** for context menu with:
-  - Analyze File... (Middle-click / Alt+A)
-  - Open Drop Target Window (Alt+D)
+  - Analyze File...
+  - Analyze Selected File in Explorer (Alt+A)
+  - Open Drop Target Window (Alt+Shift+D)
   - Recent Files access
   - Settings...
   - Quit
@@ -105,19 +106,15 @@ AudioTooltip can automatically start when Windows boots up, providing seamless b
 
 2. **Manual Setup (Alternative):**
    - Press `Win + R`, type `shell:startup`, press Enter
-   - Copy a shortcut to `AudioTooltip.exe` into the startup folder
+   - Copy a shortcut to `AudioTooltip.exe` into the startup folder (add `--startup` to the shortcut target to start silently)
 
 ### Startup Behavior
 
-AudioTooltip provides a consistent startup experience whether launched manually or automatically by Windows:
-
-**All Launch Methods:**
-- Shows splash screen with loading progress
-- Displays welcome instructions after startup
-- Full user interface experience
-- Ready for immediate use via hotkeys (Alt+A, Alt+D)
-
-This ensures users always see the instructions and understand how to use the application, regardless of how it was started.
+- **First launch:** a welcome dialog explains the shortcuts and asks whether to start with Windows.
+- **Manual launch:** a short splash screen, then one tray notification.
+- **Windows startup** (`--startup`): starts silently in the system tray, no splash and no notification.
+- Only one instance runs at a time; launching it again just tells you it is already in the tray.
+- Ready for immediate use via hotkeys (Alt+A, Alt+Shift+D).
 
 ## Uninstalling AudioTooltip
 
@@ -139,7 +136,7 @@ AudioTooltip includes a convenient cleanup script to completely remove the appli
    - Provides a complete uninstallation
 
 3. **Manual cleanup (if needed):**
-   - Delete the AudioTooltip.exe file
+   - Delete the AudioTooltip folder (AudioTooltip.exe and its `_internal` folder)
    - Remove any shortcuts from Desktop or Start Menu
    - Delete the application folder if using the folder version
 

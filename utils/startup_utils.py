@@ -47,14 +47,33 @@ class StartupManager:
         """Get the command to use for startup registration"""
         exe_path = self.get_executable_path()
         
+        # --startup: start silently in the tray (no splash, no messages)
         if getattr(sys, 'frozen', False):
-            # For compiled executable, no special arguments needed
-            return f'"{exe_path}"'
+            return f'"{exe_path}" --startup'
         else:
             # For Python script, need to include Python interpreter
             python_exe = sys.executable
-            return f'"{python_exe}" "{exe_path}"'
+            return f'"{python_exe}" "{exe_path}" --startup'
     
+    def refresh_command(self):
+        """If an autostart entry for the packaged exe exists but differs from the
+        current command (older version, moved folder), rewrite it. Never
+        creates one, and never touches it when running from source (that would
+        point the user's autostart at a development interpreter)."""
+        if not getattr(sys, 'frozen', False):
+            return False
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.registry_key, 0, winreg.KEY_READ) as key:
+                value, _ = winreg.QueryValueEx(key, self.app_name)
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            self.logger.error(f"Error reading startup entry: {e}")
+            return False
+        if "audiotooltip.exe" in value.lower() and value != self.get_startup_command():
+            return self.enable_startup()
+        return True
+
     def enable_startup(self):
         """Add the application to Windows startup"""
         try:

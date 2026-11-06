@@ -6,6 +6,9 @@ Provides a customizable tooltip for displaying audio analysis results.
 
 import os
 import subprocess
+
+from ui.settings_dialog import TRANSCRIPTION_LANGUAGES
+from core.audio_analyzer import MAX_VIZ_SECONDS
 from PyQt5.QtGui import QPixmap, QFont, QIcon, QPainter, QColor, QPen, QCursor
 from PyQt5.QtCore import Qt, QTimer, QSize, QPoint, QRect, QPropertyAnimation, QEasingCurve, QSettings
 from PyQt5.QtWidgets import (
@@ -63,11 +66,22 @@ class EnhancedTooltip(QWidget):
         self.on_transcription_requested = None  # Callback for transcription requests
         self.on_refresh_requested = None  # Callback for refresh button
         self._viz_generated = False  # Track if visualization has been explicitly generated
+        self._waveform_source = None  # Full-resolution waveform pixmap
+        self._viz_source = None  # Full-resolution visualization pixmap
+        self._preview_playing = False
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.timeout.connect(self._stop_preview)
 
         # Initialize UI
         self._init_ui()
 
         self.setFixedSize(600, 800)
+
+    def fit_to_screen(self, screen_rect):
+        """Use 600x800 when it fits, otherwise shrink to the available screen area."""
+        self.setFixedSize(min(600, screen_rect.width() - 40),
+                          min(800, screen_rect.height() - 40))
 
     def _init_ui(self):
         """Initialize UI components"""
@@ -134,27 +148,22 @@ class EnhancedTooltip(QWidget):
 
         # Control buttons - ensure they have proper icons and are visible
         self.pin_button = QToolButton(self)
-        self.pin_button.setIcon(QIcon.fromTheme(
-            "pin", QIcon(":/resources/icons/pin.png")))  # Fallback to embedded resource
+        self.pin_button.setText("📌")
         self.pin_button.setToolTip("Pin tooltip (prevent auto-hide)")
         self.pin_button.setCheckable(True)
         self.pin_button.clicked.connect(self._toggle_pin)
         self.pin_button.setFixedSize(24, 24)  # Explicit size
 
         settings_button = QToolButton(self)
-        settings_button.setIcon(QIcon.fromTheme(
-            "configure", QIcon(":/resources/icons/configure.png")))
+        settings_button.setText("⚙")
         settings_button.setToolTip("Settings")
         settings_button.clicked.connect(self._on_settings_clicked)
         settings_button.setFixedSize(24, 24)  # Explicit size
 
         # Explicitly set close button with standard icon
         close_button = QToolButton(self)
-        close_button.setIcon(QIcon.fromTheme(
-            "window-close", QIcon(":/resources/icons/close.png")))
-        if close_button.icon().isNull():  # If icon loading failed, create a text button
-            close_button.setText("✕")  # Use unicode X as fallback
-            close_button.setStyleSheet("font-weight: bold; color: #CC0000;")
+        close_button.setText("✕")
+        close_button.setStyleSheet("font-weight: bold; color: #CC0000;")
 
         close_button.setToolTip("Close")
         close_button.clicked.connect(self.hide_with_fade)
@@ -209,7 +218,7 @@ class EnhancedTooltip(QWidget):
         self.play_button.setIcon(QIcon.fromTheme(
             "media-playback-start", QIcon.fromTheme("play")))
         self.play_button.clicked.connect(self._play_preview)
-        self.play_button.setToolTip("Play a short audio preview of the file")
+        self.play_button.setToolTip("Play the first 10 seconds of the current channel (click again to stop)")
 
         # Add Refresh button
         refresh_button = QPushButton("Refresh Analysis")
@@ -318,7 +327,7 @@ class EnhancedTooltip(QWidget):
 
     def _expand_visualization(self):
         """Show expanded view of current visualization (at least 3x larger)"""
-        if not self.viz_display.pixmap() or self.viz_display.pixmap().isNull():
+        if self._viz_source is None:
             return
 
         # Create popup window
@@ -327,8 +336,8 @@ class EnhancedTooltip(QWidget):
         popup.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
 
         # Calculate size - at least 3x larger than original display
-        orig_width = self.viz_display.pixmap().width()
-        orig_height = self.viz_display.pixmap().height()
+        orig_width = self._viz_source.width()
+        orig_height = self._viz_source.height()
         # Scale to fit within 85% of available screen, respecting resolution
         screen = QApplication.primaryScreen().availableGeometry()
         expanded_width = min(max(orig_width * 3, 800), int(screen.width() * 0.85))
@@ -343,7 +352,7 @@ class EnhancedTooltip(QWidget):
         image_label.setAlignment(Qt.AlignCenter)
 
         # Scale the image to at least 3x its original size, maintaining aspect ratio
-        expanded_pixmap = self.viz_display.pixmap().scaled(
+        expanded_pixmap = self._viz_source.scaled(
             expanded_width,
             expanded_height,
             Qt.KeepAspectRatio,
@@ -381,10 +390,9 @@ class EnhancedTooltip(QWidget):
             planned_paths.append(os.path.join(directory, f"{base_name}{channel_suffix}_metadata.txt"))
         if self._has_transcription and self.transcript_text.text():
             planned_paths.append(os.path.join(directory, f"{base_name}_transcript.txt"))
-        if self.waveform_label.pixmap() and not self.waveform_label.pixmap().isNull():
+        if self._waveform_source is not None:
             planned_paths.append(os.path.join(directory, f"{base_name}{channel_suffix}_waveform.png"))
-        if (self.viz_display.pixmap() and not self.viz_display.pixmap().isNull() and
-                hasattr(self, '_viz_generated') and self._viz_generated):
+        if self._viz_source is not None and self._viz_generated:
             viz_type = self.viz_combo_menu.text().lower().replace('-', '_')
             planned_paths.append(os.path.join(directory, f"{base_name}{channel_suffix}_{viz_type}.png"))
 
@@ -405,57 +413,64 @@ class EnhancedTooltip(QWidget):
 
         # List of items to save
         items_saved = []
+        items_failed = []
 
         # Save metadata and features text
         if self.metadata_label.text() and self.metadata_label.text() != "No metadata available":
             metadata_path = os.path.join(
                 directory, f"{base_name}{channel_suffix}_metadata.txt")
             try:
-                with open(metadata_path, 'w') as f:
+                with open(metadata_path, 'w', encoding='utf-8') as f:
                     f.write(self.metadata_label.text())
                 items_saved.append(
                     f"Metadata: {os.path.basename(metadata_path)}")
             except Exception as e:
                 self.logger.error(f"Error saving metadata: {e}")
+                items_failed.append(f"Metadata: {e}")
 
         # Save transcript
         if self._has_transcription and self.transcript_text.text():
             transcript_path = os.path.join(
                 directory, f"{base_name}_transcript.txt")
             try:
-                with open(transcript_path, 'w') as f:
+                with open(transcript_path, 'w', encoding='utf-8') as f:
                     f.write(self.transcript_text.text())
                 items_saved.append(
                     f"Transcript: {os.path.basename(transcript_path)}")
             except Exception as e:
                 self.logger.error(f"Error saving transcript: {e}")
+                items_failed.append(f"Transcript: {e}")
 
-        # Save waveform image
-        if self.waveform_label.pixmap() and not self.waveform_label.pixmap().isNull():
+        # Save waveform image (full resolution, not the on-screen scaled copy)
+        if self._waveform_source is not None:
             waveform_path = os.path.join(
                 directory, f"{base_name}{channel_suffix}_waveform.png")
-            try:
-                self.waveform_label.pixmap().save(waveform_path)
+            if self._waveform_source.save(waveform_path):
                 items_saved.append(
                     f"Waveform: {os.path.basename(waveform_path)}")
-            except Exception as e:
-                self.logger.error(f"Error saving waveform: {e}")
+            else:
+                items_failed.append(f"Waveform: could not write {waveform_path}")
 
         # Save visualization image (only if it has been explicitly generated)
-        if (self.viz_display.pixmap() and not self.viz_display.pixmap().isNull() and
-            hasattr(self, '_viz_generated') and self._viz_generated):
+        if self._viz_source is not None and self._viz_generated:
             viz_type = self.viz_combo_menu.text().lower().replace('-', '_')
             viz_path = os.path.join(
                 directory, f"{base_name}{channel_suffix}_{viz_type}.png")
-            try:
-                self.viz_display.pixmap().save(viz_path)
+            if self._viz_source.save(viz_path):
                 items_saved.append(
                     f"{self.viz_combo_menu.text()}: {os.path.basename(viz_path)}")
-            except Exception as e:
-                self.logger.error(f"Error saving visualization: {e}")
+            else:
+                items_failed.append(f"{self.viz_combo_menu.text()}: could not write {viz_path}")
 
         # Show confirmation message
-        if items_saved:
+        if items_failed:
+            QMessageBox.warning(
+                self,
+                "Some Files Were Not Saved",
+                ("Saved:\n" + "\n".join(items_saved) + "\n\n" if items_saved else "") +
+                f"Failed (in {directory}):\n" + "\n".join(items_failed)
+            )
+        elif items_saved:
             QMessageBox.information(
                 self,
                 "Files Saved",
@@ -580,6 +595,7 @@ class EnhancedTooltip(QWidget):
         waveform_layout.setSpacing(0)  # Remove spacing
 
         self.waveform_label = QLabel()
+        self.waveform_label.setMinimumSize(1, 1)  # let the layout, not the pixmap, decide the size
         self.waveform_label.setAlignment(Qt.AlignCenter)
         self.waveform_label.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -646,7 +662,7 @@ class EnhancedTooltip(QWidget):
         self.viz_display.setAlignment(Qt.AlignCenter)
         self.viz_display.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.viz_display.setMinimumHeight(250)
+        self.viz_display.setMinimumSize(1, 250)  # the pixmap must not widen the tab
         self.viz_display.setStyleSheet(
             "background-color: rgba(220, 220, 220, 150);")
 
@@ -694,11 +710,18 @@ class EnhancedTooltip(QWidget):
         language_layout = QHBoxLayout()
         language_label = QLabel("Language:")
         self.language_combo = QComboBox()
+        for label, code in TRANSCRIPTION_LANGUAGES:
+            self.language_combo.addItem(label, code)
+        language_layout.addWidget(language_label)
+        language_layout.addWidget(self.language_combo, 1)
 
         # Add channel selector dropdown
         channel_layout = QHBoxLayout()
         channel_label = QLabel("Channel:")
         self.transcription_channel_combo = QComboBox()
+        self.transcription_channel_combo.addItem("Mono mix", -1)
+        channel_layout.addWidget(channel_label)
+        channel_layout.addWidget(self.transcription_channel_combo, 1)
 
         button_layout.addWidget(self.run_transcribe_button)
         button_layout.addLayout(language_layout)
@@ -771,15 +794,13 @@ class EnhancedTooltip(QWidget):
         if not self.current_file or not hasattr(self, 'on_transcription_requested'):
             return
 
-        # Get selected language
-        language = self.language_combo.currentData()
+        # Get selected language ("" = auto-detect)
+        language = self.language_combo.currentData() or None
 
-        # Get selected channel (guard against empty combo box returning None)
+        # Get selected channel (-1 = mono mix)
         selected_channel = self.transcription_channel_combo.currentData()
         if selected_channel is None:
-            selected_channel = self.current_channel
-        elif selected_channel == -2:
-            selected_channel = self.current_channel
+            selected_channel = -1
 
         # Notify the main application to run transcription
         if hasattr(self, 'on_transcription_requested'):
@@ -791,14 +812,13 @@ class EnhancedTooltip(QWidget):
         # Save current selection
         current_selection = self.transcription_channel_combo.currentData()
 
-        # Clear channel-specific options (keep Mono Mix and Current Channel)
-        while self.transcription_channel_combo.count() > 2:
-            self.transcription_channel_combo.removeItem(2)
-
-        # Add individual channels
-        for i in range(num_channels):
-            channel_name = "Left" if i == 0 else "Right" if i == 1 else f"Channel {i+1}"
-            self.transcription_channel_combo.addItem(f"{channel_name}", i)
+        # Rebuild: "Mono mix" then one entry per channel
+        self.transcription_channel_combo.clear()
+        self.transcription_channel_combo.addItem("Mono mix", -1)
+        if num_channels > 1:
+            for i in range(num_channels):
+                channel_name = "Left" if i == 0 else "Right" if i == 1 else f"Channel {i+1}"
+                self.transcription_channel_combo.addItem(f"{channel_name}", i)
 
         # Try to restore previous selection if it's still valid
         if current_selection is not None:
@@ -834,14 +854,14 @@ class EnhancedTooltip(QWidget):
 
 <b>2. Keyboard Shortcuts:</b><br>
    • <b>Alt+A</b>: Analyze the currently selected file in Windows Explorer<br>
-   • <b>Alt+D</b>: Open drop target window for drag & drop<br><br>
+   • <b>Alt+Shift+D</b>: Open drop target window for drag & drop<br><br>
 
 <b>3. Middle-Click Detection:</b><br>
-   • Hold middle mouse button on an audio file in Explorer<br>
-   • The tooltip will automatically appear with analysis<br><br>
+   • Select an audio file in File Explorer<br>
+   • Middle-click anywhere in that Explorer window<br><br>
 
 <b>4. Drag & Drop:</b><br>
-   • Use Alt+D to open the drop target window<br>
+   • Use Alt+Shift+D to open the drop target window<br>
    • Drag audio files directly onto the window
         """)
         methods_text.setWordWrap(True)
@@ -854,10 +874,9 @@ class EnhancedTooltip(QWidget):
         formats_layout = QVBoxLayout(formats_group)
         
         formats_text = QLabel("""
-<b>Common formats:</b> WAV, MP3, FLAC, OGG, M4A, AAC<br>
+<b>Common formats:</b> WAV, MP3, FLAC, OGG, Opus, M4A, AAC, WMA, MP4<br>
 <b>Professional formats:</b> AIFF, AU, BWF, RF64<br>
-<b>Compressed formats:</b> MP3, AAC, OGG Vorbis<br>
-<b>Lossless formats:</b> FLAC, ALAC, WavPack
+<b>Lossless formats:</b> FLAC, ALAC (.m4a), WavPack, APE
         """)
         formats_text.setWordWrap(True)
         formats_text.setStyleSheet("color: #34495e; line-height: 1.4;")
@@ -980,7 +999,7 @@ class EnhancedTooltip(QWidget):
         layout.addWidget(tech_group)
 
         # Copyright notice
-        copyright_label = QLabel("© 2024 Patrick Marmaroli. All rights reserved.")
+        copyright_label = QLabel("© 2025 Patrick Marmaroli. Released under the MIT License.")
         copyright_label.setAlignment(Qt.AlignCenter)
         copyright_label.setStyleSheet("font-size: 12px; color: #95a5a6; margin-top: 20px;")
         layout.addWidget(copyright_label)
@@ -1025,7 +1044,18 @@ class EnhancedTooltip(QWidget):
                     font-style: italic;
                     {base_style}
                 """)
+            elif not delay_ms.get("reliable", True):
+                # No clear correlation peak (e.g. unrelated left/right content)
+                self.delay_label.setText(
+                    f"Time Delay: unreliable (no clear correlation between channels, "
+                    f"best guess {abs(delay_ms['ms']):.2f} ms)")
+                self.delay_label.setStyleSheet(f"""
+                    color: #996600;
+                    font-style: italic;
+                    {base_style}
+                """)
             else:
+                delay_ms = delay_ms["ms"]
                 direction = "right→left" if delay_ms > 0 else "left→right"
                 if abs(delay_ms) <= 0.01:
                     # Very small or zero delay — report it but mark as near zero
@@ -1071,6 +1101,10 @@ class EnhancedTooltip(QWidget):
         """Update the tooltip content with analysis results."""
         self.current_file = file_path
         self._viz_generated = False  # Reset visualization flag for new file
+        self._viz_source = None  # Don't show the previous file's visualization
+        self.viz_display.clear()
+        if self._preview_playing:
+            self._stop_preview()
 
         # Update channels
         self.update_channels(num_channels, current_channel)
@@ -1094,18 +1128,10 @@ class EnhancedTooltip(QWidget):
         if viz_buffer:
             pixmap = QPixmap()
             pixmap.loadFromData(viz_buffer.getvalue())
-
-            # Calculate available width and scale appropriately
-            available_width = self.waveform_label.width()
-            scaled_pixmap = pixmap.scaledToWidth(
-                available_width,
-                Qt.SmoothTransformation
-            )
-
-            # Set the pixmap and center it
-            self.waveform_label.setPixmap(scaled_pixmap)
-            self.waveform_label.setAlignment(Qt.AlignCenter)
+            self._waveform_source = pixmap
+            self._rescale_waveform()
         else:
+            self._waveform_source = None
             self.waveform_label.setText("No waveform available")
 
         # Update transcript
@@ -1122,8 +1148,8 @@ class EnhancedTooltip(QWidget):
             )
             if transcription_enabled:
                 self.transcript_text.setText(
-                    "No speech detected in this audio segment.\n\n"
-                    "Tip: Try increasing the preview duration in Settings → Analysis."
+                    "Choose the language and channel, then click Run Transcription.\n\n"
+                    "The duration transcribed is set in Settings → Transcription."
                 )
             else:
                 self.transcript_text.setText(
@@ -1131,17 +1157,25 @@ class EnhancedTooltip(QWidget):
                     "To enable: open Settings → Transcription and provide your Azure Speech credentials."
                 )
 
-        # Update preview info with settings
+        # Default transcription language = the one chosen in Settings
         if self.settings:
-            use_whole_signal = self.settings.value(
-                "use_whole_signal", "false") == "true"
-            preview_duration = "entire signal" if use_whole_signal else f"{self.settings.value('preview_duration', '10')} seconds"
-        else:
-            # Fallback if settings not available
-            preview_duration = "10 seconds"
+            index = self.language_combo.findData(
+                self.settings.value("transcription_language", ""))
+            if index >= 0:
+                self.language_combo.setCurrentIndex(index)
 
-        preview_info = f"Analysis is based on first {preview_duration} of channel {current_channel+1}/{num_channels}"
-        self.viz_preview_info.setText(preview_info)
+        # Visualizations cover the preview duration, capped at MAX_VIZ_SECONDS
+        if self.settings and self.settings.value("use_whole_signal", "false") != "true":
+            try:
+                seconds = min(float(self.settings.value('preview_duration', '10')), MAX_VIZ_SECONDS)
+            except (ValueError, TypeError):
+                seconds = 10
+            span = f"the first {seconds:g} seconds"
+        else:
+            span = f"the whole file (first {MAX_VIZ_SECONDS // 60} minutes at most)"
+        self.viz_preview_info.setText(
+            f"Visualizations use {span} of channel {current_channel+1}/{num_channels}. "
+            "The Overview waveform always covers the whole file.")
 
         self.update_channel_delay(delay_ms)
 
@@ -1181,6 +1215,17 @@ class EnhancedTooltip(QWidget):
         """Reset the auto-hide timer"""
         if self.pinned:
             return
+
+        if self.settings is not None:
+            if self.settings.value("auto_close", "true") != "true":
+                self.auto_hide_timer.stop()
+                self._countdown_tick.stop()
+                self._countdown_label.setText("")
+                return
+            try:
+                self.auto_hide_seconds = max(1, int(self.settings.value("auto_close_time", "10")))
+            except (ValueError, TypeError):
+                self.auto_hide_seconds = 10
 
         if self.auto_hide_timer.isActive():
             self.auto_hide_timer.stop()
@@ -1235,13 +1280,32 @@ class EnhancedTooltip(QWidget):
         if not self.current_file or not self.audio_player:
             return
 
-        # Create and play preview clip
-        preview_path = self.audio_player.create_temp_clip(self.current_file)
-        if preview_path:
-            self.audio_player.play_audio(preview_path)
+        # Second click stops the preview
+        if self._preview_playing:
+            self._stop_preview()
+            return
+
+        # Play the first seconds of the current channel inside the app
+        preview_path, seconds = self.audio_player.create_temp_clip(
+            self.current_file, channel=self.current_channel)
+        if preview_path and self.audio_player.play_clip(preview_path):
+            self._preview_playing = True
+            self.play_button.setText("Stop Preview")
+            self._preview_timer.start(int(seconds * 1000) + 200)
+        else:
+            QMessageBox.warning(self, "Preview Failed",
+                                "Could not create or play a preview of this file.")
 
         # Reset timer when preview is played
         self.reset_auto_hide_timer()
+
+    def _stop_preview(self):
+        """Stop the preview and restore the button."""
+        self._preview_timer.stop()
+        if self.audio_player:
+            self.audio_player.stop_playback()
+        self._preview_playing = False
+        self.play_button.setText("Play Preview")
 
     def _open_in_player(self):
         """Open the full audio file in default player"""
@@ -1318,6 +1382,9 @@ class EnhancedTooltip(QWidget):
         QToolButton:hover {
             background-color: rgba(200, 200, 200, 100);
         }
+        QToolButton:checked {
+            background-color: rgba(52, 101, 164, 90);
+        }
         QGroupBox {
             border: 1px solid #ccc;
             border-radius: 6px;
@@ -1371,34 +1438,49 @@ class EnhancedTooltip(QWidget):
 
     # Override events
 
+    def _rescale_waveform(self):
+        """Scale the full-resolution waveform image to the label width."""
+        if getattr(self, '_waveform_source', None) is None:
+            return
+        # Container width, not the label's: the label grows to its pixmap size
+        width = max(100, self.waveform_label.parentWidget().contentsRect().width())
+        ratio = self.devicePixelRatioF()
+        scaled = self._waveform_source.scaledToWidth(int(width * ratio), Qt.SmoothTransformation)
+        scaled.setDevicePixelRatio(ratio)  # sharp on high-DPI screens
+        self.waveform_label.setPixmap(scaled)
+        self.waveform_label.setAlignment(Qt.AlignCenter)
+
+    def set_visualization(self, pixmap):
+        """Show a visualization scaled to the visible width; keep the original
+        for Expand and Save All."""
+        self._viz_source = pixmap
+        # Tab widget width is valid even while the Visualizations tab is hidden
+        width = max(100, self.tab_widget.width() - 40)
+        ratio = self.devicePixelRatioF()
+        scaled = pixmap.scaled(int(width * ratio), int(max(250, pixmap.height()) * ratio),
+                               Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scaled.setDevicePixelRatio(ratio)
+        self.viz_display.setPixmap(scaled)
+
     def resizeEvent(self, event):
-        """Handle resize event to update visualizations while maintaining aspect ratio"""
+        """Rescale the waveform from its original image when the size changes"""
         super().resizeEvent(event)
+        self._rescale_waveform()
 
-        # Resize waveform to fit width while preserving aspect ratio
-        if hasattr(self, 'waveform_label') and self.waveform_label.pixmap() and not self.waveform_label.pixmap().isNull():
-            original_pixmap = self.waveform_label.pixmap()
-
-            # Get available width
-            available_width = self.waveform_label.width()
-
-            # Scale to width while preserving aspect ratio
-            scaled_pixmap = original_pixmap.scaledToWidth(
-                available_width,
-                Qt.SmoothTransformation
-            )
-
-            # Center the scaled pixmap
-            self.waveform_label.setPixmap(scaled_pixmap)
-            self.waveform_label.setAlignment(Qt.AlignCenter)
+    def showEvent(self, event):
+        """Layout sizes are only final once shown: rescale the waveform then"""
+        super().showEvent(event)
+        QTimer.singleShot(0, self._rescale_waveform)
 
     def enterEvent(self, event):
         """Handle mouse enter event"""
         super().enterEvent(event)
 
-        # Stop auto-hide timer when mouse enters
+        # Stop auto-hide timer (and its countdown) while the mouse is over the tooltip
         if self.auto_hide_timer.isActive():
             self.auto_hide_timer.stop()
+        self._countdown_tick.stop()
+        self._countdown_label.setText("")
 
     def leaveEvent(self, event):
         """Handle mouse leave event"""

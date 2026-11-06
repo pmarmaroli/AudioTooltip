@@ -15,9 +15,9 @@ The app runs quietly in your system tray (the small icons area near your clock) 
 There are several ways to analyze audio files:
 
 1. **Keyboard shortcut**: Select a file in Windows Explorer and press Alt+A
-2. **Middle-click detection**: Middle-click any audio file in Windows Explorer
+2. **Middle-click detection**: Select an audio file in Windows Explorer, then middle-click in that Explorer window
 3. **System tray**: Right-click the app's icon for menu, middle-click for quick file dialog
-4. **Drop target window**: Press Alt+D to open a drop target window and drag-and-drop audio files onto it
+4. **Drop target window**: Press Alt+Shift+D to open a drop target window and drag-and-drop audio files onto it
 
 ## Watch our Youtube Demo
 
@@ -27,12 +27,12 @@ There are several ways to analyze audio files:
 
 - **Overview**: Basic information and waveform display.
 - **Visualizations**: Various audio visualizations (spectrogram, mel-spectrogram, chromagram, double waveform)
-- **Full Audio Transcription**: Speech-to-text via Azure Speech Services with continuous recognition for files of any length
+- **Audio Transcription**: Speech-to-text via Azure Speech Services (your own Azure key) with continuous recognition
 - **Simple interface**: Everything is organized in tabs for easy navigation
 
 Additional controls:
 
-- Play a short preview of the audio
+- Play (and stop) a 10-second preview of the current channel
 - Open the full file in Audacity or your default audio player
 - Pin the tooltip to keep it visible
 - Switch between channels for multi-channel audio
@@ -41,7 +41,7 @@ Additional controls:
 ## Keyboard Shortcuts
 
 - **Alt+A**: Analyze the currently selected audio file in Windows Explorer
-- **Alt+D**: Open the drop target window for drag-and-drop file analysis
+- **Alt+Shift+D**: Open the drop target window for drag-and-drop file analysis
 
 ## Why It's Useful
 
@@ -131,7 +131,7 @@ The pre-built executable includes all necessary dependencies. No additional soft
 1. Go to the [Releases page](https://github.com/pmarmaroli/AudioTooltip/releases)
 2. Download the latest version
 3. Extract the ZIP file
-4. Run AudioTooltip.exe
+4. Open the extracted `AudioTooltip` folder and run `AudioTooltip.exe` (keep the `_internal` folder next to it)
 
 ### Option 2: Build from Source
 
@@ -198,28 +198,30 @@ The script will:
 - Verify Python 3.11 is installed (attempts `winget` install if not found)
 - Create `.venv` in the project root if it does not exist
 - Install all `requirements.txt` dependencies into the venv
-- Install PyInstaller into the venv if not present
+- Install or upgrade PyInstaller (6.22 or later) in the venv
 - Run `python -m PyInstaller AudioTooltip.spec --clean`
 - Copy `cleanup.ps1` and `installation-guide.md` into `dist/`
 
-Output: `dist/AudioTooltip.exe` (plus `cleanup.ps1` and `installation-guide.md` in the same folder).
+Output: the `dist/AudioTooltip/` folder containing `AudioTooltip.exe`, its `_internal/` folder, `cleanup.ps1` and `installation-guide.md`. It is a one-folder build (no UPX): it starts faster than a single packed .exe and triggers fewer antivirus false positives.
 
 > **Note:** Do not run `pip install pyinstaller` manually beforehand — the script handles this inside the venv.
 
 ### 3. Verify the build
 
-- Confirm `dist/AudioTooltip.exe` exists.
-- Launch `dist/AudioTooltip.exe` and check that the splash screen shows the correct version number.
-- Confirm `dist/cleanup.ps1` and `dist/installation-guide.md` are present.
+- Confirm `dist/AudioTooltip/AudioTooltip.exe` exists.
+- Launch `dist/AudioTooltip/AudioTooltip.exe` and check that the splash screen shows the correct version number.
+- Confirm `dist/AudioTooltip/cleanup.ps1` and `dist/AudioTooltip/installation-guide.md` are present.
 
 ### 4. Package and publish
 
-1. Zip the contents of `dist/` (not the folder itself — users should be able to unzip and run directly):
+1. Zip the `dist/AudioTooltip/` folder (users unzip it and run `AudioTooltip.exe` inside):
 
    ```
-   AudioTooltip.exe
-   cleanup.ps1
-   installation-guide.md
+   AudioTooltip/
+     AudioTooltip.exe
+     _internal/
+     cleanup.ps1
+     installation-guide.md
    ```
 
 2. Commit the version bump:

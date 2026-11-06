@@ -38,7 +38,7 @@ a = Analysis(
         ('resources', 'resources'),  # Include resources directory
     ] + azure_datas,
     hiddenimports=[
-        'librosa', 'soundfile', 'numpy', 'matplotlib', 'pynput', 'keyboard',
+        'librosa', 'soundfile', 'numpy', 'matplotlib', 'keyboard', 'av', 'soxr',
         'scipy.io.wavfile', 'scipy.signal', 'matplotlib.backends.backend_agg',
         'mutagen', 'win32api', 'win32con', 'win32gui', 'win32com.client',
         'pythoncom', 'winreg', 'signal', 'subprocess', 'threading', 'traceback',
@@ -47,7 +47,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # Unused heavy modules pulled in transitively
+    excludes=['IPython', 'pytest'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -56,7 +57,7 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# Native splash screen shown during extraction (before Python starts)
+# Native splash screen shown while Python starts
 splash = Splash(
     'resources/splash.png',
     binaries=a.binaries,
@@ -67,22 +68,19 @@ splash = Splash(
     text_default='Starting...',
 )
 
+# One-folder build: starts faster than one-file (no extraction to %TEMP% at
+# every launch) and, without UPX, triggers far fewer antivirus false positives.
 exe = EXE(
     pyz,
     a.scripts,
     splash,
-    splash.binaries,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='AudioTooltip',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
+    upx=False,
     console=False,  # Hide console window
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -90,4 +88,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='resources/icons/app_icon.png',
+)
+
+coll = COLLECT(
+    exe,
+    splash.binaries,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    name='AudioTooltip',
 )

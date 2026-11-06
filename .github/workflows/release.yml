@@ -34,7 +34,7 @@ jobs:
           Write-Host "Version bumped: v$cur -> v$new"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pyinstaller
+        run: pip install -r requirements.txt "pyinstaller>=6.22"
 
       - name: Build executable
         run: python -m PyInstaller AudioTooltip.spec --clean
@@ -42,16 +42,16 @@ jobs:
       - name: Verify build output
         shell: pwsh
         run: |
-          if (-not (Test-Path "dist\AudioTooltip.exe")) {
+          if (-not (Test-Path "dist\AudioTooltip\AudioTooltip.exe")) {
             throw "Build failed — AudioTooltip.exe not found"
           }
 
       - name: Create release zip
         shell: pwsh
         run: |
-          Copy-Item scripts/cleanup.ps1   dist/
-          Copy-Item installation-guide.md dist\
-          Compress-Archive -Path dist\* -DestinationPath "AudioTooltip-${{ steps.version.outputs.tag }}.zip"
+          Copy-Item scripts/cleanup.ps1   dist/AudioTooltip/
+          Copy-Item installation-guide.md dist/AudioTooltip/
+          Compress-Archive -Path dist\AudioTooltip -DestinationPath "AudioTooltip-${{ steps.version.outputs.tag }}.zip"
 
       - name: Commit version bump and tag
         shell: pwsh
